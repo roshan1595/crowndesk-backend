@@ -1,0 +1,1759 @@
+// CrownDesk V2 - Prisma Schema
+// Based on plan.txt Section 20 Database Schemas
+// Implements multi-tenant architecture with RLS support
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgvector(map: "vector"), uuidOssp(map: "uuid-ossp")]
+}
+
+// ===========================================
+// Section 20.1: Tenancy & Users
+// ===========================================
+
+model Tenant {
+  id                   String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  clerkOrgId           String   @unique @map("clerk_org_id") // Clerk organization ID
+  name                 String
+  status               TenantStatus @default(active)
+  stripeCustomerId     String?  @map("stripe_customer_id")
+  stripeSubscriptionId String?  @map("stripe_subscription_id")
+  subscriptionPlan     SubscriptionPlan @default(starter) @map("subscription_plan")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  users        User[]
+  patients     Patient[]
+  families     Family[]
+  providers    Provider[]
+  operatories  Operatory[]
+  appointments Appointment[]
+  approvals    Approval[]
+  auditLogs    AuditLog[]
+  documents    Document[]
+  aiInsights   AiInsight[]
+  insurancePolicies InsurancePolicy[]
+  eligibilityRequests EligibilityRequest[]
+  pmsMappings  PmsMapping[]
+  usageLedger  UsageLedger[]
+  phoneNumbers PhoneNumber[]
+  agentConfigs AgentConfig[]
+  automationRuns AutomationRun[]
+
+  @@index([subscriptionPlan])
+  @@map("tenants")
+}
+
+model User {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  clerkUserId String   @unique @map("clerk_user_id")
+  tenantId    String   @map("tenant_id") @db.Uuid
+  role        UserRole @default(frontdesk)
+  email       String
+  firstName   String?  @map("first_name")
+  lastName    String?  @map("last_name")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant         Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  approvals      Approval[]      @relation("ApprovedBy")
+  auditLogs      AuditLog[]
+  sessions       Session[]
+  securityEvents SecurityEvent[]
+  userTraining   UserTraining[]
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+// ===========================================
+// Section: Session Management (HIPAA Compliance)
+// ===========================================
+
+model Session {
+  id           String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  tokenHash    String   @unique @map("token_hash") // Last 16 chars of JWT for identification
+  ipAddress    String?  @map("ip_address")
+  userAgent    String?  @map("user_agent")
+  lastActivity DateTime @map("last_activity")
+  expiresAt    DateTime @map("expires_at")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([tenantId])
+  @@index([lastActivity])
+  @@index([isActive])
+  @@map("sessions")
+}
+
+// ===========================================
+// Section: Security Events (Monitoring & Alerts)
+// ===========================================
+
+model SecurityEvent {
+  id         String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId   String?           @map("tenant_id") @db.Uuid
+  userId     String?           @map("user_id") @db.Uuid
+  eventType  SecurityEventType @map("event_type")
+  severity   Severity
+  ipAddress  String?           @map("ip_address")
+  userAgent  String?           @map("user_agent")
+  metadata   Json?
+  createdAt  DateTime          @default(now()) @map("created_at")
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([userId, createdAt])
+  @@index([eventType])
+  @@index([severity])
+  @@map("security_events")
+}
+
+enum SecurityEventType {
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGOUT
+  SESSION_TIMEOUT
+  SESSION_REVOKED
+  ACCOUNT_LOCKED
+  ACCOUNT_UNLOCKED
+  PASSWORD_RESET
+  MFA_ENABLED
+  MFA_DISABLED
+  PERMISSION_DENIED
+  SUSPICIOUS_ACTIVITY
+  RATE_LIMIT_EXCEEDED
+  TOKEN_REFRESH
+  ORG_SWITCH
+}
+
+enum Severity {
+  low
+  medium
+  high
+  critical
+}
+
+// ===========================================
+// Section: Permission System (Granular RBAC)
+// ===========================================
+
+model Permission {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  name        String   @unique // e.g., 'read:patients', 'write:claims'
+  description String?
+  category    String   // e.g., 'patients', 'billing', 'appointments'
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  rolePermissions RolePermission[]
+
+  @@index([category])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  role         UserRole
+  permissionId String   @map("permission_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([role, permissionId])
+  @@index([role])
+  @@map("role_permissions")
+}
+
+// ===========================================
+// Section: HIPAA Training Compliance
+// ===========================================
+
+model UserTraining {
+  id             String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  userId         String       @map("user_id") @db.Uuid
+  trainingType   TrainingType @map("training_type")
+  completedAt    DateTime     @map("completed_at")
+  expiresAt      DateTime     @map("expires_at")
+  certificateUrl String?      @map("certificate_url")
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("user_training")
+}
+
+enum TrainingType {
+  HIPAA_SECURITY
+  HIPAA_PRIVACY
+  PHI_HANDLING
+  DATA_BREACH_RESPONSE
+  ANNUAL_REFRESHER
+}
+
+enum TenantStatus {
+  active
+  suspended
+  cancelled
+  pending
+}
+
+enum SubscriptionPlan {
+  free
+  starter
+  professional
+  enterprise
+}
+
+enum UserRole {
+  admin
+  frontdesk
+  billing
+  manager
+}
+
+// ===========================================
+// Section 20.2: Patients & Appointments
+// ===========================================
+
+model Patient {
+  id           String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId     String        @map("tenant_id") @db.Uuid
+  pmsSource    PmsSource     @default(manual) @map("pms_source")
+  pmsPatientId String?       @map("pms_patient_id")
+  firstName    String        @map("first_name")
+  lastName     String        @map("last_name")
+  middleName   String?       @map("middle_name")
+  preferredName String?      @map("preferred_name")
+  dob          DateTime      @db.Date
+  gender       Gender?
+  ssn          String?       // Encrypted
+  phone        String?
+  mobilePhone  String?       @map("mobile_phone")
+  workPhone    String?       @map("work_phone")
+  email        String?
+  address      Json?         // PatientAddress
+  preferredContact PreferredContact @default(phone) @map("preferred_contact")
+  
+  // Emergency Contact
+  emergencyContactName     String? @map("emergency_contact_name")
+  emergencyContactPhone    String? @map("emergency_contact_phone")
+  emergencyContactRelation String? @map("emergency_contact_relation")
+  
+  // Clinical
+  medicalAlerts     String[] @map("medical_alerts")
+  allergies         Json?    // Allergy[]
+  medications       Json?    // Medication[]
+  medicalConditions String[] @map("medical_conditions")
+  
+  // Family
+  familyId               String?  @map("family_id") @db.Uuid
+  isPrimaryAccountHolder Boolean  @default(false) @map("is_primary_account_holder")
+  guarantorId            String?  @map("guarantor_id") @db.Uuid
+  
+  // Status
+  status       PatientStatus @default(active)
+  lastVisit    DateTime?     @map("last_visit")
+  nextAppointment DateTime?  @map("next_appointment")
+  
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  tenant            Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  family            Family?            @relation("FamilyMembers", fields: [familyId], references: [id], onDelete: SetNull)
+  guarantor         Patient?           @relation("Guarantor", fields: [guarantorId], references: [id], onDelete: SetNull)
+  dependents        Patient[]          @relation("Guarantor")
+  appointments      Appointment[]
+  insurancePolicies InsurancePolicy[]
+  documents         Document[]
+  eligibilityRequests EligibilityRequest[]
+  claims            Claim[]
+  treatmentPlans    TreatmentPlan[]
+  invoices          Invoice[]
+  callRecords       CallRecord[]
+  completedProcedures CompletedProcedure[]
+
+  @@unique([pmsSource, pmsPatientId])
+  @@index([tenantId])
+  @@index([familyId])
+  @@index([status])
+  @@map("patients")
+}
+
+model Family {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  name        String?  // Optional family name like "The Smith Family"
+  guarantorId String?  @map("guarantor_id") @db.Uuid // Primary bill payer
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant  Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  members Patient[] @relation("FamilyMembers")
+
+  @@index([tenantId])
+  @@map("families")
+}
+
+// Provider model for dental providers
+model Provider {
+  id              String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId        String       @map("tenant_id") @db.Uuid
+  pmsProviderId   String?      @map("pms_provider_id")
+  firstName       String       @map("first_name")
+  lastName        String       @map("last_name")
+  title           String?      // Dr., etc.
+  npi             String?      // National Provider Identifier
+  license         String?      // State license number
+  specialty       ProviderSpecialty @default(general_dentist)
+  email           String?
+  phone           String?
+  color           String?      // For calendar display
+  isActive        Boolean      @default(true) @map("is_active")
+  workingHours    Json?        @map("working_hours") // ProviderWorkingHours
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  // Relations
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  appointments Appointment[]
+  operatories  Operatory[]   // Operatories where this provider is default
+  completedProcedures CompletedProcedure[]
+
+  @@unique([tenantId, npi])
+  @@index([tenantId])
+  @@index([isActive])
+  @@map("providers")
+}
+
+// Operatory model for dental chairs/rooms
+model Operatory {
+  id           String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId     String   @map("tenant_id") @db.Uuid
+  pmsOperatoryId String? @map("pms_operatory_id")
+  name         String   // e.g., "Chair 1", "Hygiene Room A"
+  shortName    String?  @map("short_name") // e.g., "Op1"
+  location     String?  // Physical location in office
+  color        String?  // For calendar display
+  description  String?
+  isActive     Boolean  @default(true) @map("is_active")
+  isHygiene    Boolean  @default(false) @map("is_hygiene") // Hygiene-only operatory
+  equipment    String[] @default([]) // Array of equipment available
+  defaultProviderId String? @map("default_provider_id") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  defaultProvider Provider?   @relation(fields: [defaultProviderId], references: [id], onDelete: SetNull)
+  appointments Appointment[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@index([isActive])
+  @@index([defaultProviderId])
+  @@map("operatories")
+}
+
+enum Gender {
+  male
+  female
+  other
+  unknown
+}
+
+enum PreferredContact {
+  email
+  phone
+  sms
+  mail
+}
+
+enum PatientStatus {
+  active
+  inactive
+  deceased
+  archived
+}
+
+enum ProviderSpecialty {
+  general_dentist
+  orthodontist
+  periodontist
+  endodontist
+  oral_surgeon
+  prosthodontist
+  pediatric_dentist
+  hygienist
+}
+
+model Appointment {
+  id               String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId         String            @map("tenant_id") @db.Uuid
+  patientId        String            @map("patient_id") @db.Uuid
+  providerId       String?           @map("provider_id") @db.Uuid
+  operatoryId      String?           @map("operatory_id") @db.Uuid
+  pmsAppointmentId String?           @map("pms_appointment_id")
+  provider         String            // Legacy: provider name (keep for compatibility)
+  operatory        String?           // Legacy: operatory name
+  startTime        DateTime          @map("start_time")
+  endTime          DateTime          @map("end_time")
+  duration         Int               @default(30) // minutes
+  appointmentType  AppointmentType   @default(treatment) @map("appointment_type")
+  status           AppointmentStatus @default(scheduled)
+  chiefComplaint   String?           @map("chief_complaint")
+  notes            String?
+  procedureCodes   String[]          @map("procedure_codes")
+  
+  // Confirmation
+  confirmedAt      DateTime?         @map("confirmed_at")
+  confirmedBy      String?           @map("confirmed_by")
+  remindersSent    Int               @default(0) @map("reminders_sent")
+  
+  // Check-in/out
+  arrivedAt        DateTime?         @map("arrived_at")
+  seatedAt         DateTime?         @map("seated_at")
+  completedAt      DateTime?         @map("completed_at")
+  
+  // Family Linking
+  familyAppointmentId String?        @map("family_appointment_id") @db.Uuid
+  
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+  createdBy        String?           @map("created_by")
+
+  // Relations
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  patient    Patient     @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  providerRef Provider?  @relation(fields: [providerId], references: [id], onDelete: SetNull)
+  operatoryRef Operatory? @relation(fields: [operatoryId], references: [id], onDelete: SetNull)
+  callRecords CallRecord[]
+
+  @@index([tenantId, startTime])
+  @@index([patientId])
+  @@index([providerId])
+  @@index([operatoryId])
+  @@index([status])
+  @@index([familyAppointmentId])
+  @@map("appointments")
+}
+
+enum AppointmentType {
+  new_patient
+  recall
+  treatment
+  emergency
+  consultation
+  follow_up
+  hygiene
+  periodontal
+  restorative
+  endodontic
+  oral_surgery
+  orthodontic
+}
+
+enum PmsSource {
+  open_dental
+  dentrix
+  eaglesoft
+  manual
+}
+
+enum AppointmentStatus {
+  scheduled
+  confirmed
+  checked_in
+  in_progress
+  completed
+  cancelled
+  no_show
+}
+
+// ===========================================
+// Section 20.3: Insurance & Billing
+// ===========================================
+
+model InsurancePolicy {
+  id                 String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  patientId          String             @map("patient_id") @db.Uuid
+  tenantId           String             @map("tenant_id") @db.Uuid
+  payerName          String             @map("payer_name")
+  payerId            String?            @map("payer_id")
+  planName           String?            @map("plan_name")
+  memberId           String             @map("member_id")
+  groupNumber        String?            @map("group_number")
+  subscriberRelation SubscriberRelation @default(self) @map("subscriber_relation")
+  effectiveDate      DateTime?          @map("effective_date") @db.Date
+  terminationDate    DateTime?          @map("termination_date") @db.Date
+  isPrimary          Boolean            @default(true) @map("is_primary")
+  lastVerified       DateTime?          @map("last_verified")
+  lastVerificationStatus String?        @map("last_verification_status")
+  createdAt          DateTime           @default(now()) @map("created_at")
+  updatedAt          DateTime           @updatedAt @map("updated_at")
+
+  // Relations
+  tenant              Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  patient             Patient              @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  eligibilityRequests EligibilityRequest[]
+  claims              Claim[]
+
+  @@index([patientId])
+  @@index([tenantId])
+  @@map("insurance_policies")
+}
+
+model EligibilityRequest {
+  id                String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  patientId         String            @map("patient_id") @db.Uuid
+  tenantId          String            @map("tenant_id") @db.Uuid
+  insurancePolicyId String            @map("insurance_policy_id") @db.Uuid
+  requestedAt       DateTime          @default(now()) @map("requested_at")
+  status            EligibilityStatus @default(pending)
+  stediRequestId    String?           @map("stedi_request_id")
+  requestPayload    Json?             @map("request_payload")
+  createdAt         DateTime          @default(now()) @map("created_at")
+
+  // Relations
+  tenant            Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  patient           Patient              @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  insurancePolicy   InsurancePolicy      @relation(fields: [insurancePolicyId], references: [id], onDelete: Cascade)
+  eligibilityResponse EligibilityResponse?
+
+  @@index([patientId])
+  @@index([status])
+  @@index([tenantId])
+  @@map("eligibility_requests")
+}
+
+model EligibilityResponse {
+  id                   String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  eligibilityRequestId String   @unique @map("eligibility_request_id") @db.Uuid
+  rawPayload           Json     @map("raw_payload")
+  normalizedSummary    Json     @map("normalized_summary") // EligibilityNormalizedSummary
+  receivedAt           DateTime @default(now()) @map("received_at")
+
+  // Relations
+  eligibilityRequest EligibilityRequest @relation(fields: [eligibilityRequestId], references: [id], onDelete: Cascade)
+
+  @@map("eligibility_responses")
+}
+
+enum SubscriberRelation {
+  self
+  spouse
+  child
+  other
+}
+
+enum EligibilityStatus {
+  pending
+  verified
+  failed
+  expired
+  not_found
+}
+
+// ===========================================
+// Section 20.4: Approvals & Audit
+// ===========================================
+
+model Approval {
+  id              String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId        String             @map("tenant_id") @db.Uuid
+  entityType      ApprovalEntityType @map("entity_type")
+  entityId        String             @map("entity_id") @db.Uuid
+  field           String?            // Field being changed
+  oldValue        Json?              @map("old_value") // Previous value
+  newValue        Json?              @map("new_value") // New value
+  beforeState     Json               @map("before_state")
+  afterState      Json               @map("after_state")
+  aiRationale     String?            @map("ai_rationale")
+  aiEvidence      Json?              @map("ai_evidence") // AIEvidence[]
+  status          ApprovalStatus     @default(pending)
+  approvedBy      String?            @map("approved_by") @db.Uuid
+  approvedAt      DateTime?          @map("approved_at")
+  rejectionReason String?            @map("rejection_reason")
+  callRecordId    String?            @map("call_record_id") @db.Uuid // If created from AI call
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+
+  // Relations
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  approver   User?       @relation("ApprovedBy", fields: [approvedBy], references: [id])
+  callRecord CallRecord? @relation(fields: [callRecordId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([entityType, entityId])
+  @@map("approvals")
+}
+
+model AuditLog {
+  id         String         @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId   String         @map("tenant_id") @db.Uuid
+  userId     String?        @map("user_id") @db.Uuid
+  actorType  AuditActorType @map("actor_type")
+  actorId    String         @map("actor_id")
+  action     String
+  entityType String         @map("entity_type")
+  entityId   String?        @map("entity_id") @db.Uuid
+  
+  // Enhanced fields for HIPAA compliance
+  method     String?        // HTTP method (GET, POST, etc.)
+  url        String?        // Request URL
+  statusCode Int?           @map("status_code")
+  duration   Int?           // Request duration in ms
+  result     AuditResult    @default(success)
+  
+  metadata   Json?
+  ipAddress  String?        @map("ip_address")
+  userAgent  String?        @map("user_agent")
+  createdAt  DateTime       @default(now()) @map("created_at")
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId, createdAt])
+  @@index([entityType, entityId])
+  @@index([userId, createdAt])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+enum AuditResult {
+  success
+  failure
+  error
+}
+
+enum ApprovalStatus {
+  pending
+  approved
+  rejected
+}
+
+enum ApprovalEntityType {
+  appointment
+  patient
+  insurance
+  billing
+  coding
+  claim
+}
+
+enum AuditActorType {
+  user
+  ai
+  system
+}
+
+// ===========================================
+// Section 20.5: Documents & AI Context
+// ===========================================
+
+model Document {
+  id          String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId    String       @map("tenant_id") @db.Uuid
+  patientId   String?      @map("patient_id") @db.Uuid
+  type        DocumentType
+  fileName    String       @map("file_name")
+  mimeType    String       @map("mime_type")
+  storageKey  String       @map("storage_key") // S3 key
+  contentHash String       @map("content_hash")
+  sizeBytes   Int          @map("size_bytes")
+  metadata    Json?        // DocumentMetadata
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  // Relations
+  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  patient   Patient?   @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  ragChunks RagChunk[]
+
+  @@index([tenantId])
+  @@index([patientId])
+  @@map("documents")
+}
+
+model RagChunk {
+  id         String                      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  documentId String                      @map("document_id") @db.Uuid
+  chunkIndex Int                         @map("chunk_index")
+  content    String
+  embedding  Unsupported("vector(1536)")? // OpenAI ada-002 dimension
+  metadata   Json?                       // RagChunkMetadata
+  createdAt  DateTime                    @default(now()) @map("created_at")
+
+  // Relations
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@index([documentId])
+  @@map("rag_chunks")
+}
+
+// ===========================================
+// AI Insights
+// ===========================================
+
+model AiInsight {
+  id          String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId    String           @map("tenant_id") @db.Uuid
+  type        AiInsightType
+  title       String
+  description String           @db.Text
+  confidence  Float
+  evidence    Json?
+  status      AiInsightStatus  @default(pending)
+  entityType  String           @map("entity_type")
+  entityId    String?          @map("entity_id") @db.Uuid
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([entityType, entityId])
+  @@map("ai_insights")
+}
+
+enum AiInsightType {
+  coding
+  summary
+  alert
+  recommendation
+}
+
+enum AiInsightStatus {
+  pending
+  approved
+  rejected
+}
+
+enum DocumentType {
+  clinical_note
+  treatment_plan
+  xray
+  insurance_card
+  consent_form
+  eob
+  call_recording
+  other
+}
+
+// ===========================================
+// AI Voice Agent - Call Records & Transcripts
+// ===========================================
+
+model CallRecord {
+  id            String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId      String       @map("tenant_id") @db.Uuid
+  retellCallId  String       @unique @map("retell_call_id") // Retell's call ID
+  patientId     String?      @map("patient_id") @db.Uuid // If patient identified
+  
+  // Agent Management Integration (NEW)
+  agentConfigId   String?  @map("agent_config_id") @db.Uuid
+  phoneNumberId   String?  @map("phone_number_id") @db.Uuid
+  
+  // Call Details
+  phoneNumber   String?      @map("phone_number") // Caller's number (scrubbed for storage)
+  direction     CallDirection @default(inbound)
+  startTime     DateTime     @map("start_time")
+  endTime       DateTime?    @map("end_time")
+  durationSecs  Int?         @map("duration_secs")
+  
+  // Status
+  status        CallStatus   @default(in_progress)
+  disconnectReason String?   @map("disconnect_reason")
+  
+  // Outcome
+  intent        String?      // Primary detected intent
+  outcome       CallOutcome?
+  appointmentId String?      @map("appointment_id") @db.Uuid // If appointment was booked
+  transferredTo String?      @map("transferred_to") // If transferred to human
+  
+  // Call Quality Metrics (NEW)
+  qualityScore    Float?   @map("quality_score") // 0-10
+  userSatisfaction Int?    @map("user_satisfaction") // 1-5 stars
+  wasEscalated    Boolean  @default(false) @map("was_escalated")
+  escalationReason String? @map("escalation_reason")
+  
+  // Analysis
+  sentiment     CallSentiment?
+  summary       String?      @db.Text // AI-generated summary
+  
+  // Audio (optional)
+  recordingUrl  String?      @map("recording_url") // S3 URL
+  recordingKey  String?      @map("recording_key") // S3 key
+  
+  // Metadata
+  metadata      Json?
+  createdAt     DateTime     @default(now()) @map("created_at")
+  updatedAt     DateTime     @updatedAt @map("updated_at")
+
+  // Relations
+  patient       Patient?     @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id], onDelete: SetNull)
+  agentConfig   AgentConfig? @relation(fields: [agentConfigId], references: [id], onDelete: SetNull)
+  phoneNumberRecord PhoneNumber? @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+  transcripts   CallTranscript[]
+  toolCalls     CallToolInvocation[]
+  approvals     Approval[]
+
+  @@index([tenantId])
+  @@index([patientId])
+  @@index([agentConfigId])
+  @@index([phoneNumberId])
+  @@index([startTime])
+  @@index([status])
+  @@map("call_records")
+}
+
+model CallTranscript {
+  id          String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  callId      String   @map("call_id") @db.Uuid
+  
+  // Utterance
+  sequence    Int      // Order in conversation
+  role        String   // "agent" or "user"
+  content     String   @db.Text
+  contentScrubbed String? @map("content_scrubbed") @db.Text // PII removed version
+  
+  // Timing
+  timestamp   DateTime @default(now())
+  
+  // Analysis
+  intent      String?
+  confidence  Float?
+  
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  // Relations
+  call CallRecord @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId])
+  @@index([sequence])
+  @@map("call_transcripts")
+}
+
+model CallToolInvocation {
+  id           String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  callId       String   @map("call_id") @db.Uuid
+  
+  // Tool Details
+  toolName     String   @map("tool_name")
+  arguments    Json?
+  result       Json?
+  success      Boolean  @default(true)
+  errorMessage String?  @map("error_message")
+  
+  // Timing
+  invokedAt    DateTime @map("invoked_at")
+  completedAt  DateTime? @map("completed_at")
+  durationMs   Int?     @map("duration_ms")
+  
+  // Approval (if created)
+  approvalId   String?  @map("approval_id") @db.Uuid
+  
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // Relations
+  call CallRecord @relation(fields: [callId], references: [id], onDelete: Cascade)
+
+  @@index([callId])
+  @@index([toolName])
+  @@map("call_tool_invocations")
+}
+
+// ===========================================
+// Section: Agent Management (NEW - Phase 1)
+// ===========================================
+
+// Phone Number Management
+model PhoneNumber {
+  id            String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  
+  // Phone Details
+  phoneNumber   String   @map("phone_number") // E.164 format: +15551234567
+  friendlyName  String?  @map("friendly_name")
+  provider      PhoneProvider
+  providerSid   String?  @map("provider_sid") // Twilio/Telnyx ID
+  
+  // Configuration
+  status        PhoneStatus  @default(INACTIVE)
+  assignedAgentId String?   @map("assigned_agent_id") @db.Uuid
+  
+  // Capabilities
+  voiceEnabled  Boolean  @default(true) @map("voice_enabled")
+  smsEnabled    Boolean  @default(false) @map("sms_enabled")
+  
+  // Metadata
+  purchasedAt   DateTime? @map("purchased_at")
+  activatedAt   DateTime? @map("activated_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+  
+  // Relations
+  tenant        Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agent         AgentConfig? @relation(fields: [assignedAgentId], references: [id])
+  calls         CallRecord[]
+  
+  @@index([tenantId])
+  @@index([phoneNumber])
+  @@index([status])
+  @@map("phone_numbers")
+}
+
+// AI Agent Configuration
+model AgentConfig {
+  id              String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  
+  // Agent Identity
+  agentName       String   @map("agent_name")
+  agentCategory   AgentCategory @default(VOICE) @map("agent_category")
+  agentType       AgentType @default(VOICE_RECEPTIONIST)
+  
+  // Voice Agent (Retell Integration) - Nullable for automation agents
+  retellAgentId   String?  @unique @map("retell_agent_id") // From Retell API
+  voiceId         String?  @map("voice_id") @default("eleven_labs_rachel")
+  language        String   @default("en-US")
+  workingHours    Json?    @map("working_hours") // {monday: {start: "09:00", end: "17:00"}}
+  transferNumber  String?  @map("transfer_number") // Human fallback
+  
+  // Automation Agent - Nullable for voice agents
+  executionSchedule String? @map("execution_schedule") // Cron expression
+  batchSize       Int?     @map("batch_size") // For batch processing
+  priority        Int?     @default(5) // 1-10 priority level
+  
+  // Status
+  status          AgentStatus @default(INACTIVE)
+  isActive        Boolean  @default(false) @map("is_active")
+  
+  // Common Configuration
+  customPrompt    String?  @map("custom_prompt") @db.Text
+  beginMessage    String?  @map("begin_message") @db.Text
+  
+  // Guardrails
+  requireApproval Boolean  @default(true) @map("require_approval")
+  maxCallDuration Int      @default(1800) @map("max_call_duration") // seconds
+  
+  // Metadata
+  activatedAt     DateTime? @map("activated_at")
+  lastActiveAt    DateTime? @map("last_active_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  createdBy       String?   @map("created_by") @db.Uuid
+  
+  // Relations
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  phoneNumbers    PhoneNumber[]
+  calls           CallRecord[]
+  automationRuns  AutomationRun[]
+  
+  @@index([tenantId])
+  @@index([agentCategory, status])
+  @@index([isActive])
+  @@map("agent_configs")
+}
+
+// Automation Agent Execution History
+model AutomationRun {
+  id              String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId        String   @map("tenant_id") @db.Uuid
+  agentConfigId   String   @map("agent_config_id") @db.Uuid
+  
+  // Execution Details
+  status          AutomationRunStatus
+  startedAt       DateTime @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  
+  // Results
+  itemsProcessed  Int      @default(0) @map("items_processed")
+  itemsSucceeded  Int      @default(0) @map("items_succeeded")
+  itemsFailed     Int      @default(0) @map("items_failed")
+  
+  // Error Tracking
+  error           String?  @db.Text
+  logs            Json?    // Detailed execution logs
+  
+  // Metadata
+  createdAt       DateTime @default(now()) @map("created_at")
+  
+  // Relations
+  tenant          Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  agentConfig     AgentConfig @relation(fields: [agentConfigId], references: [id], onDelete: Cascade)
+  
+  @@index([tenantId, agentConfigId])
+  @@index([status, startedAt])
+  @@map("automation_runs")
+}
+
+enum AutomationRunStatus {
+  running
+  completed
+  failed
+  cancelled
+}
+
+// Retell Agent Configuration per Tenant (LEGACY - Keep for backward compatibility)
+model RetellAgent {
+  id              String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId        String   @unique @map("tenant_id") @db.Uuid
+  retellAgentId   String   @unique @map("retell_agent_id") // Retell's agent ID
+  
+  // Configuration
+  agentName       String   @map("agent_name")
+  voiceId         String?  @map("voice_id") // 11labs voice ID
+  language        String   @default("en-US")
+  
+  // Custom LLM
+  llmWebsocketUrl String   @map("llm_websocket_url")
+  
+  // Phone
+  phoneNumber     String?  @map("phone_number") // Assigned Retell phone number
+  phoneNumberId   String?  @map("phone_number_id")
+  
+  // Settings
+  beginMessage    String?  @map("begin_message") @db.Text
+  generalPrompt   String?  @map("general_prompt") @db.Text
+  
+  // Status
+  isActive        Boolean  @default(true) @map("is_active")
+  
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("retell_agents")
+}
+
+enum CallDirection {
+  inbound
+  outbound
+}
+
+enum CallStatus {
+  in_progress
+  completed
+  transferred
+  failed
+  voicemail
+}
+
+enum CallOutcome {
+  appointment_booked
+  appointment_rescheduled
+  appointment_cancelled
+  information_provided
+  transferred_to_human
+  voicemail_left
+  abandoned
+  other
+}
+
+enum CallSentiment {
+  positive
+  neutral
+  negative
+  frustrated
+}
+
+// ===========================================
+// PMS Mapping Tables
+// ===========================================
+
+model PmsMapping {
+  id           String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
+  pmsSource    PmsSource @map("pms_source")
+  entityType   String    @map("entity_type")
+  pmsId        String    @map("pms_id")
+  crownDeskId  String    @map("crowndesk_id") @db.Uuid
+  lastSyncedAt DateTime  @map("last_synced_at")
+  syncStatus   SyncStatus @default(synced) @map("sync_status")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, pmsSource, entityType, pmsId])
+  @@index([crownDeskId])
+  @@map("pms_mappings")
+}
+
+enum SyncStatus {
+  synced
+  pending
+  error
+}
+
+// ===========================================
+// Usage & Billing Ledger
+// ===========================================
+
+model UsageLedger {
+  id               String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId         String    @map("tenant_id") @db.Uuid
+  usageType        UsageType @map("usage_type")
+  quantity         Int
+  unitCost         Decimal?  @map("unit_cost") @db.Decimal(10, 4)
+  metadata         Json?
+  recordedAt       DateTime  @default(now()) @map("recorded_at")
+  reportedToStripe Boolean   @default(false) @map("reported_to_stripe")
+  stripeEventId    String?   @map("stripe_event_id")
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, recordedAt])
+  @@index([reportedToStripe])
+  @@map("usage_ledger")
+}
+
+enum UsageType {
+  ai_intent
+  ai_summary
+  ai_coding
+  eligibility_check
+  call_minute
+  document_processed
+}
+
+// ===========================================
+// Sync Watermarks
+// ===========================================
+
+model SyncWatermark {
+  id           String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId     String    @map("tenant_id") @db.Uuid
+  pmsSource    PmsSource @map("pms_source")
+  entityType   String    @map("entity_type")
+  lastSyncedAt DateTime  @map("last_synced_at")
+  lastPmsId    String?   @map("last_pms_id")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@unique([tenantId, pmsSource, entityType])
+  @@map("sync_watermarks")
+}
+
+// ===========================================
+// Section 5: Claims Processing (837D/835)
+// ===========================================
+
+model Claim {
+  id                 String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId           String      @map("tenant_id") @db.Uuid
+  patientId          String      @map("patient_id") @db.Uuid
+  insurancePolicyId  String      @map("insurance_policy_id") @db.Uuid
+  appointmentId      String?     @map("appointment_id") @db.Uuid
+  
+  // Claim Info
+  claimNumber        String?     @map("claim_number")
+  claimType          ClaimType   @default(professional) @map("claim_type")
+  
+  // Service Details
+  dateOfService      DateTime    @map("date_of_service") @db.Date
+  totalCharge        Decimal     @map("total_charge") @db.Decimal(10, 2)
+  
+  // Provider
+  renderingProviderId String?    @map("rendering_provider_id")
+  billingProviderId   String?    @map("billing_provider_id")
+  
+  // Status Tracking
+  status             ClaimStatus @default(draft)
+  submittedAt        DateTime?   @map("submitted_at")
+  adjudicatedAt      DateTime?   @map("adjudicated_at")
+  
+  // Payment Info
+  allowedAmount      Decimal?    @map("allowed_amount") @db.Decimal(10, 2)
+  paidAmount         Decimal?    @map("paid_amount") @db.Decimal(10, 2)
+  patientResponsibility Decimal? @map("patient_responsibility") @db.Decimal(10, 2)
+  
+  // ERA (835)
+  eraId              String?     @map("era_id")
+  checkNumber        String?     @map("check_number")
+  paymentDate        DateTime?   @map("payment_date") @db.Date
+  eraRawResponse     Json?       @map("era_raw_response")
+  
+  // Denial/Appeal
+  denialReason       String?     @map("denial_reason")
+  denialCode         String?     @map("denial_code")
+  appealStatus       AppealStatus @default(none) @map("appeal_status")
+  appealDate         DateTime?   @map("appeal_date") @db.Date
+  
+  // EDI
+  stediClaimId       String?     @map("stedi_claim_id")
+  ediPayload         Json?       @map("edi_payload")
+  
+  // Timestamps
+  createdAt          DateTime    @default(now()) @map("created_at")
+  updatedAt          DateTime    @updatedAt @map("updated_at")
+
+  // Relations
+  patient            Patient     @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  insurancePolicy    InsurancePolicy? @relation(fields: [insurancePolicyId], references: [id])
+  procedures         ClaimProcedure[]
+  completedProcedures CompletedProcedure[]
+
+  @@index([tenantId])
+  @@index([patientId])
+  @@index([status])
+  @@index([dateOfService])
+  @@map("claims")
+}
+
+model ClaimProcedure {
+  id           String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  claimId      String   @map("claim_id") @db.Uuid
+  cdtCode      String   @map("cdt_code")
+  description  String
+  toothNumbers String[] @map("tooth_numbers")
+  surfaces     String[]
+  fee          Decimal  @db.Decimal(10, 2)
+  quantity     Int      @default(1)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // Relations
+  claim Claim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  @@index([claimId])
+  @@map("claim_procedures")
+}
+
+enum ClaimType {
+  professional
+  institutional
+}
+
+enum ClaimStatus {
+  draft
+  pending_submission
+  submitted
+  acknowledged
+  pending
+  accepted
+  rejected
+  paid
+  partially_paid
+  denied
+  appealed
+}
+
+enum AppealStatus {
+  none
+  pending
+  approved
+  denied
+}
+
+// ===========================================
+// Section 6: Treatment Plans
+// ===========================================
+
+model TreatmentPlan {
+  id                 String              @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId           String              @map("tenant_id") @db.Uuid
+  patientId          String              @map("patient_id") @db.Uuid
+  
+  // Plan Info
+  name               String
+  description        String?
+  status             TreatmentPlanStatus @default(draft)
+  
+  // Provider
+  providerId         String?             @map("provider_id")
+  presentedAt        DateTime?           @map("presented_at")
+  acceptedAt         DateTime?           @map("accepted_at")
+  
+  // Financial
+  totalFee           Decimal             @map("total_fee") @db.Decimal(10, 2)
+  insuranceEstimate  Decimal?            @map("insurance_estimate") @db.Decimal(10, 2)
+  patientEstimate    Decimal?            @map("patient_estimate") @db.Decimal(10, 2)
+  
+  // Timestamps
+  createdAt          DateTime            @default(now()) @map("created_at")
+  updatedAt          DateTime            @updatedAt @map("updated_at")
+  completedAt        DateTime?           @map("completed_at")
+
+  // Relations
+  patient            Patient             @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  phases             TreatmentPhase[]
+
+  @@index([tenantId])
+  @@index([patientId])
+  @@index([status])
+  @@map("treatment_plans")
+}
+
+model TreatmentPhase {
+  id               String           @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  treatmentPlanId  String           @map("treatment_plan_id") @db.Uuid
+  phaseNumber      Int              @map("phase_number")
+  name             String
+  
+  // Priority
+  priority         PhasePriority    @default(medium)
+  estimatedDuration Int?            @map("estimated_duration") // minutes
+  
+  // Status
+  status           PhaseStatus      @default(pending)
+  scheduledAppointmentId String?    @map("scheduled_appointment_id") @db.Uuid
+  completedAt      DateTime?        @map("completed_at")
+  
+  // Timestamps
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+
+  // Relations
+  treatmentPlan    TreatmentPlan    @relation(fields: [treatmentPlanId], references: [id], onDelete: Cascade)
+  procedures       PlannedProcedure[]
+
+  @@index([treatmentPlanId])
+  @@map("treatment_phases")
+}
+
+model PlannedProcedure {
+  id               String         @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  phaseId          String         @map("phase_id") @db.Uuid
+  cdtCode          String         @map("cdt_code")
+  description      String
+  toothNumbers     String[]       @map("tooth_numbers")
+  surfaces         String[]
+  fee              Decimal        @db.Decimal(10, 2)
+  insuranceCoverage Decimal?      @map("insurance_coverage") @db.Decimal(10, 2)
+  patientPortion   Decimal?       @map("patient_portion") @db.Decimal(10, 2)
+  createdAt        DateTime       @default(now()) @map("created_at")
+
+  // Relations
+  phase TreatmentPhase @relation(fields: [phaseId], references: [id], onDelete: Cascade)
+
+  @@index([phaseId])
+  @@map("planned_procedures")
+}
+
+enum TreatmentPlanStatus {
+  draft
+  presented
+  accepted
+  in_progress
+  completed
+  declined
+}
+
+enum PhaseStatus {
+  pending
+  in_progress
+  completed
+}
+
+enum PhasePriority {
+  urgent
+  high
+  medium
+  low
+}
+
+// ===========================================
+// Section 6.5: Completed Procedures (synced from PMS)
+// ===========================================
+
+// Procedures completed by doctors in the PMS (Open Dental)
+// This is synced FROM the PMS and used for billing/claims
+model CompletedProcedure {
+  id               String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId         String            @map("tenant_id") @db.Uuid
+  patientId        String            @map("patient_id") @db.Uuid
+  appointmentId    String?           @map("appointment_id") @db.Uuid
+  
+  // Procedure Details
+  cdtCode          String            @map("cdt_code")
+  description      String
+  procDate         DateTime          @map("proc_date") @db.Date
+  toothNumber      String?           @map("tooth_number")
+  surface          String?
+  fee              Decimal           @db.Decimal(10, 2)
+  status           ProcedureStatus   @default(completed)
+  
+  // Provider
+  providerId       String?           @map("provider_id") @db.Uuid
+  providerName     String?           @map("provider_name")
+  
+  // Clinical Notes (from doctor)
+  note             String?
+  diagCode         String?           @map("diag_code")
+  
+  // Billing Status
+  billingStatus    ProcedureBillingStatus @default(unbilled) @map("billing_status")
+  claimId          String?           @map("claim_id") @db.Uuid
+  invoiceId        String?           @map("invoice_id") @db.Uuid
+  
+  // PMS Sync
+  pmsSource        String?           @map("pms_source") // 'open_dental'
+  pmsProcedureId   String?           @map("pms_procedure_id")
+  lastSyncedAt     DateTime?         @map("last_synced_at")
+  
+  // Timestamps
+  dateComplete     DateTime?         @map("date_complete")
+  createdAt        DateTime          @default(now()) @map("created_at")
+  updatedAt        DateTime          @updatedAt @map("updated_at")
+
+  // Relations
+  patient          Patient           @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  providerRef      Provider?         @relation(fields: [providerId], references: [id])
+  claim            Claim?            @relation(fields: [claimId], references: [id])
+  invoice          Invoice?          @relation(fields: [invoiceId], references: [id])
+
+  @@unique([tenantId, pmsProcedureId, pmsSource])
+  @@index([tenantId])
+  @@index([patientId])
+  @@index([procDate])
+  @@index([billingStatus])
+  @@map("completed_procedures")
+}
+
+enum ProcedureStatus {
+  treatment_planned
+  completed
+  existing_current
+  existing_other
+  referred_out
+  deleted
+  condition
+  estimate
+}
+
+enum ProcedureBillingStatus {
+  unbilled
+  pending_claim
+  claimed
+  paid
+  denied
+  write_off
+}
+
+// ===========================================
+// Section 7: Billing & Invoices
+// ===========================================
+
+model Invoice {
+  id               String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId         String        @map("tenant_id") @db.Uuid
+  patientId        String        @map("patient_id") @db.Uuid
+  
+  // Invoice Details
+  invoiceNumber    String        @map("invoice_number")
+  invoiceDate      DateTime      @map("invoice_date") @db.Date
+  dueDate          DateTime      @map("due_date") @db.Date
+  
+  // Amounts
+  subtotal         Decimal       @db.Decimal(10, 2)
+  taxAmount        Decimal       @default(0) @map("tax_amount") @db.Decimal(10, 2)
+  discountAmount   Decimal       @default(0) @map("discount_amount") @db.Decimal(10, 2)
+  totalAmount      Decimal       @map("total_amount") @db.Decimal(10, 2)
+  
+  // Insurance Applied
+  insuranceApplied Decimal       @default(0) @map("insurance_applied") @db.Decimal(10, 2)
+  patientBalance   Decimal       @map("patient_balance") @db.Decimal(10, 2)
+  
+  // Status
+  status           InvoiceStatus @default(draft)
+  
+  // Payment Tracking
+  amountPaid       Decimal       @default(0) @map("amount_paid") @db.Decimal(10, 2)
+  amountDue        Decimal       @map("amount_due") @db.Decimal(10, 2)
+  
+  // Related
+  treatmentPlanId  String?       @map("treatment_plan_id") @db.Uuid
+  
+  // Communication
+  sentAt           DateTime?     @map("sent_at")
+  sentMethod       String?       @map("sent_method")
+  
+  // Timestamps
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+
+  // Relations
+  patient          Patient       @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  lineItems        InvoiceLineItem[]
+  payments         Payment[]
+  completedProcedures CompletedProcedure[]
+
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId])
+  @@index([patientId])
+  @@index([status])
+  @@map("invoices")
+}
+
+model InvoiceLineItem {
+  id           String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  invoiceId    String   @map("invoice_id") @db.Uuid
+  description  String
+  cdtCode      String?  @map("cdt_code")
+  quantity     Int      @default(1)
+  unitPrice    Decimal  @map("unit_price") @db.Decimal(10, 2)
+  amount       Decimal  @db.Decimal(10, 2)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  // Relations
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@map("invoice_line_items")
+}
+
+model Payment {
+  id              String        @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId        String        @map("tenant_id") @db.Uuid
+  invoiceId       String        @map("invoice_id") @db.Uuid
+  
+  // Payment Details
+  amount          Decimal       @db.Decimal(10, 2)
+  method          PaymentMethod
+  referenceNumber String?       @map("reference_number")
+  paymentDate     DateTime      @map("payment_date") @db.Date
+  
+  // Stripe
+  stripePaymentId String?       @map("stripe_payment_id")
+  
+  // User
+  postedBy        String        @map("posted_by")
+  
+  // Timestamps
+  createdAt       DateTime      @default(now()) @map("created_at")
+
+  // Relations
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+  @@index([tenantId])
+  @@map("payments")
+}
+
+enum InvoiceStatus {
+  draft
+  sent
+  paid
+  partial
+  overdue
+  void
+}
+
+enum PaymentMethod {
+  cash
+  check
+  credit_card
+  ach
+  insurance
+  other
+}
+
+// ===========================================
+// Section 8: Procedure Codes (CDT)
+// ===========================================
+
+model ProcedureCode {
+  id              String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId        String?      @map("tenant_id") @db.Uuid // null = system-wide
+  
+  // Code Info
+  code            String       // e.g., 'D0120'
+  category        CDTCategory
+  description     String
+  abbreviation    String?
+  
+  // Fee Schedule
+  defaultFee      Decimal      @map("default_fee") @db.Decimal(10, 2)
+  
+  // Insurance
+  typicalCoverage Int?         @map("typical_coverage") // percentage, e.g., 80
+  frequencyLimit  String?      @map("frequency_limit") // e.g., '2 per year'
+  
+  // Clinical
+  typicalDuration Int?         @map("typical_duration") // minutes
+  isActive        Boolean      @default(true) @map("is_active")
+  
+  // Metadata
+  version         String       @default("2026")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+
+  @@unique([tenantId, code])
+  @@index([code])
+  @@index([category])
+  @@map("procedure_codes")
+}
+
+enum CDTCategory {
+  diagnostic
+  preventive
+  restorative
+  endodontics
+  periodontics
+  prosthodontics_removable
+  prosthodontics_fixed
+  oral_surgery
+  orthodontics
+  adjunctive
+}
+
+// ===========================================
+// Agent Management Enums (NEW - Phase 1)
+// ===========================================
+
+enum PhoneProvider {
+  TWILIO
+  TELNYX
+  VONAGE
+  SIP_TRUNK
+  OTHER
+}
+
+enum PhoneStatus {
+  INACTIVE      // Purchased but not configured
+  ACTIVE        // Live and receiving calls
+  SUSPENDED     // Temporarily disabled
+  PORTING       // Number port in progress
+  RELEASED      // Released back to provider
+}
+
+enum AgentCategory {
+  VOICE         // Phone-based agents (Retell AI)
+  AUTOMATION    // Backend automation agents
+}
+
+enum AgentType {
+  // Voice Agents (Phone/Call handling)
+  VOICE_RECEPTIONIST  // Main voice assistant
+  VOICE_SCHEDULER     // Appointment-only agent
+  VOICE_EMERGENCY     // After-hours emergency triage
+  VOICE_FOLLOWUP      // Patient outreach calls
+  
+  // Automation Agents (Backend tasks)
+  INSURANCE_VERIFIER  // Real-time eligibility checks
+  CLAIMS_PROCESSOR    // 837D submission & tracking
+  CODING_ASSISTANT    // CDT code suggestions
+  BILLING_AUTOMATOR   // Invoice generation & follow-up
+  TREATMENT_PLANNER   // Treatment plan optimization
+  DENIAL_ANALYZER     // Claim denial resolution
+  PAYMENT_COLLECTOR   // AR follow-up automation
+  APPOINTMENT_OPTIMIZER // Schedule optimization
+  
+  // Custom
+  CUSTOM              // Custom configured agent
+}
+
+enum AgentStatus {
+  INACTIVE        // Not started
+  ACTIVE          // Running and ready
+  ON_CALL         // Currently in a call
+  PAUSED          // Temporarily paused
+  ERROR           // Configuration error
+}
+
+// ===========================================
+// Section: Patient Voice Registration (Hybrid System)
+// ===========================================
+
+model RegistrationToken {
+  id              String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId        String    @map("tenant_id") @db.Uuid
+  
+  // Voice-collected data (pre-filled in form)
+  phone           String
+  firstName       String    @map("first_name")
+  lastName        String    @map("last_name")
+  dateOfBirth     DateTime  @map("date_of_birth") @db.Date
+  reasonForVisit  String?   @map("reason_for_visit")
+  
+  // Call context
+  callId          String?   @map("call_id")
+  agentId         String?   @map("agent_id") @db.Uuid
+  
+  // Token lifecycle
+  token           String    @unique
+  expiresAt       DateTime  @map("expires_at")
+  usedAt          DateTime? @map("used_at")
+  
+  // Security
+  ipAddress       String?   @map("ip_address")
+  userAgent       String?   @map("user_agent")
+  
+  // Result
+  patientId       String?   @map("patient_id") @db.Uuid
+  
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  
+  @@index([tenantId])
+  @@index([phone])
+  @@index([expiresAt])
+  @@index([token])
+  @@map("registration_tokens")
+}
+
+model PatientRegistrationStage {
+  id              String             @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId        String             @map("tenant_id") @db.Uuid
+  patientId       String?            @map("patient_id") @db.Uuid
+  registrationTokenId String?        @map("registration_token_id") @db.Uuid
+  
+  // Stage tracking
+  stage           RegistrationStage  @default(voice_intake)
+  
+  // Voice intake data
+  voiceCallId     String?            @map("voice_call_id")
+  voiceTranscript String?            @map("voice_transcript") @db.Text
+  
+  // Form progress
+  formStartedAt   DateTime?          @map("form_started_at")
+  formCompletedAt DateTime?          @map("form_completed_at")
+  formData        Json?              @map("form_data") // Partial form data for resume
+  
+  // Completion
+  completedAt     DateTime?          @map("completed_at")
+  
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+  
+  @@index([tenantId])
+  @@index([patientId])
+  @@index([stage])
+  @@map("patient_registration_stages")
+}
+
+enum RegistrationStage {
+  voice_intake      // Call started, collecting basic info
+  sms_sent          // Registration link sent via SMS
+  form_started      // Patient opened the form
+  form_incomplete   // Patient started but didn't finish
+  form_submitted    // Patient submitted the form
+  verified          // Staff verified the registration
+  completed         // Full registration complete
+}

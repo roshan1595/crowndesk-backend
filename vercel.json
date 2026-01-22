@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "installCommand": "pnpm install",
+  "buildCommand": "npx prisma generate --schema ./prisma/schema.prisma && pnpm run build",
+  "builds": [
+    {
+      "src": "index.ts",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "index.ts"
+    }
+  ],
+  "env": {
+    "NODE_ENV": "production"
+  },
+  "build": {
+    "env": {
+      "PRISMA_GENERATE_SKIP_AUTOINSTALL": "true"
+    }
+  }
+}
