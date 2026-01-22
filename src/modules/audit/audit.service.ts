@@ -269,12 +269,13 @@ export class AuditService {
       }),
 
       // Recent activity trend (last 7 days)
+      // Cast tenantId to UUID for proper comparison
       this.prisma.$queryRaw`
         SELECT 
           DATE(created_at) as date,
           COUNT(*) as count
         FROM audit_logs
-        WHERE tenant_id = ${tenantId}
+        WHERE tenant_id = ${tenantId}::uuid
           AND created_at >= ${new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)}
         GROUP BY DATE(created_at)
         ORDER BY date DESC
