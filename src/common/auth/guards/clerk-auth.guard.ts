@@ -110,11 +110,11 @@ export class ClerkAuthGuard implements CanActivate {
         try {
           const payload = await verifyToken(token, buildVerifyOptions());
           
-          if (payload.sub && (payload as any).org_id) {
-            this.logger.log('DEV MODE: Using Clerk JWT for tenant isolation (org: ' + (payload as any).org_id + ')');
-            
-            // Use the real Clerk org for proper multi-tenant isolation
-            const organizationId = (payload as any).org_id;
+          // Clerk uses 'o.id' for organization ID in JWT claims (not 'org_id')
+          const organizationId = (payload as any).o?.id || (payload as any).org_id;
+          
+          if (payload.sub && organizationId) {
+            this.logger.log('DEV MODE: Using Clerk JWT for tenant isolation (org: ' + organizationId + ')');
             
             // Look up or create user in our database
             let user = await this.prisma.user.findUnique({
@@ -218,9 +218,13 @@ export class ClerkAuthGuard implements CanActivate {
       }
 
       // Extract organization ID from Clerk JWT
-      const organizationId = (payload as any).org_id;
+      // Clerk uses 'o.id' for organization ID in JWT claims (not 'org_id')
+      const organizationId = (payload as any).o?.id || (payload as any).org_id;
+      
+      this.logger.log(`Organization ID from JWT: ${organizationId || 'NONE'}`);
 
       if (!organizationId) {
+        this.logger.error(`JWT payload missing organization: ${JSON.stringify(payload)}`);
         throw new UnauthorizedException(
           'No organization selected. Please select an organization to continue.',
         );
