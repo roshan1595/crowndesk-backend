@@ -25,6 +25,7 @@ import { Reflector } from '@nestjs/core';
 import { Request, Response } from 'express';
 import { verifyToken } from '@clerk/backend';
 import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
+import { IS_SERVICE_AUTH_KEY } from '../decorators/service-auth.decorator';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SecurityService } from '../services/security.service';
 import { SessionService } from '../services/session.service';
@@ -67,6 +68,17 @@ export class ClerkAuthGuard implements CanActivate {
 
     if (isPublic) {
       return true;
+    }
+
+    // Check if route uses service authentication (AI agents, webhooks)
+    // Let ServiceAuthGuard handle these routes
+    const isServiceAuth = this.reflector.getAllAndOverride<boolean>(
+      IS_SERVICE_AUTH_KEY,
+      [context.getHandler(), context.getClass()],
+    );
+
+    if (isServiceAuth) {
+      return true; // Skip Clerk auth, ServiceAuthGuard will handle it
     }
 
     const request = context.switchToHttp().getRequest<Request>();
