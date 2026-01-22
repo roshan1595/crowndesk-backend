@@ -85,14 +85,30 @@ export class ClerkAuthGuard implements CanActivate {
     const authHeader = request.headers['authorization'];
     const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null;
     
+    // Build verify options once for reuse
+    const buildVerifyOptions = (): Parameters<typeof verifyToken>[1] => {
+      const options: Parameters<typeof verifyToken>[1] = {
+        secretKey: process.env.CLERK_SECRET_KEY,
+        authorizedParties: process.env.CORS_ORIGINS?.split(',').map(s => s.trim()) || [
+          'https://crowndesk.xaltrax.com',
+          'http://localhost:3000',
+        ],
+        // Allow 30 seconds of clock skew to handle short-lived tokens (~60s)
+        // This accommodates network delays and server time drift
+        clockSkewInMs: 30000,
+      };
+      if (process.env.CLERK_JWT_KEY) {
+        options.jwtKey = process.env.CLERK_JWT_KEY;
+      }
+      return options;
+    };
+    
     // In dev mode with dev-auth header: try Clerk JWT first for proper tenant isolation
     if (isDevelopment && hasDevAuth) {
       // If there's a Clerk JWT, verify it for proper multi-tenant isolation
       if (token) {
         try {
-          const payload = await verifyToken(token, {
-            secretKey: process.env.CLERK_SECRET_KEY,
-          });
+          const payload = await verifyToken(token, buildVerifyOptions());
           
           if (payload.sub && (payload as any).org_id) {
             this.logger.log('DEV MODE: Using Clerk JWT for tenant isolation (org: ' + (payload as any).org_id + ')');
@@ -178,10 +194,13 @@ export class ClerkAuthGuard implements CanActivate {
     response.setHeader('X-RateLimit-Reset', rateLimit.resetTime.toString());
 
     try {
-      // Verify JWT with Clerk
-      const payload = await verifyToken(token, {
-        secretKey: process.env.CLERK_SECRET_KEY,
-      });
+      // Log token verification attempt (first 20 chars of token for debugging)
+      this.logger.log(`Verifying JWT token: ${token.substring(0, 20)}...`);
+      
+      // Verify JWT with Clerk using the same options as dev mode
+      const payload = await verifyToken(token, buildVerifyOptions());
+      
+      this.logger.log(`JWT verified successfully for user: ${payload.sub}`);
 
       if (!payload.sub) {
         await this.securityService.trackFailedAuth(clientIp, {
@@ -279,15 +298,17 @@ export class ClerkAuthGuard implements CanActivate {
         throw error;
       }
 
-      // Log authentication failure
+      // Log authentication failure with detailed error info
       await this.securityService.trackFailedAuth(clientIp, {
         ipAddress: clientIp,
         userAgent,
       });
 
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.warn(`Authentication failed from ${clientIp}: ${errorMessage}`);
-      throw new UnauthorizedException('Invalid authentication token');
+      const errorReason = (error as any)?.reason || 'unknown';
+      this.logger.error(`Authentication failed from ${clientIp}: ${errorMessage} (reason: ${errorReason})`);
+      this.logger.error(`Token (first 50 chars): ${token.substring(0, 50)}...`);
+      throw new UnauthorizedException(`Invalid authentication token: ${errorReason}`);
     }
   }
 
