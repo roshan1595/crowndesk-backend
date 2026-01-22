@@ -607,10 +607,10 @@ export class PmsSyncService {
         });
 
         // Calculate totals from procedures
-        const totalFee = plan.procedures.reduce((sum, p) => sum + (p.fee || 0), 0);
-        const statusMap: Record<string, 'draft' | 'presented' | 'accepted' | 'in_progress' | 'completed' | 'cancelled'> = {
+        const totalFee = plan.procedures.reduce((sum, p) => sum + (p.procFee || 0), 0);
+        const statusMap: Record<string, 'draft' | 'presented' | 'accepted' | 'in_progress' | 'completed' | 'declined'> = {
           active: 'accepted',
-          inactive: 'cancelled',
+          inactive: 'declined',
           saved: 'draft',
         };
 
@@ -669,11 +669,11 @@ export class PmsSyncService {
               await this.prisma.plannedProcedure.create({
                 data: {
                   phaseId: phase.id,
-                  cdtCode: proc.procCode || '',
+                  cdtCode: proc.cdtCode || '',
                   description: proc.description || '',
                   toothNumbers: proc.toothNum ? [proc.toothNum] : [],
                   surfaces: proc.surface ? [proc.surface] : [],
-                  fee: proc.fee || 0,
+                  fee: proc.procFee || 0,
                 },
               });
             }
