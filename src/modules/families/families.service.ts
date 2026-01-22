@@ -475,7 +475,7 @@ export class FamiliesService {
     const groupId = (familyAppointmentId as any)[0].id;
 
     // Create appointments for each member
-    const appointments = [];
+    const appointments: any[] = [];
     let currentStartTime = new Date(dto.startTime);
 
     for (let i = 0; i < dto.memberIds.length; i++) {
@@ -509,7 +509,7 @@ export class FamiliesService {
             },
           },
         },
-      });
+      }) as any;
 
       appointments.push(appointment);
 

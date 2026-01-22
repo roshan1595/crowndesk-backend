@@ -376,7 +376,7 @@ export class AgentsService {
     const agent = await this.getAgent(tenantId, id);
 
     // Get latest status from Retell AI
-    let retellStatus = null;
+    let retellStatus: any = null;
     if (agent.retellAgentId) {
       try {
         retellStatus = await this.retellService.getAgent(agent.retellAgentId);

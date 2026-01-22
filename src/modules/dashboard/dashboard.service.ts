@@ -227,7 +227,16 @@ export class DashboardService {
       }),
     ]);
 
-    const tasks = [];
+    const tasks: Array<{
+      id: string;
+      type: string;
+      priority: string;
+      title: string;
+      description: string;
+      entityId: string;
+      entityType: string;
+      createdAt: Date;
+    }> = [];
 
     // Add confirmation tasks
     for (const apt of appointmentsNeedingConfirmation) {
