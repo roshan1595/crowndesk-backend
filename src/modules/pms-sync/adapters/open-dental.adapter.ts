@@ -527,7 +527,20 @@ export class OpenDentalAdapter implements PmsAdapter {
 
     const endpoint = '/providers';
     const data = await this.makeRequest(endpoint);
-    return data || [];
+    
+    // Map Open Dental field names to our interface
+    // Open Dental uses: ProvNum, FName, LName, Abbr, Suffix, NationalProvID, StateLicense, Specialty, IsHidden
+    return (data || []).map((p: any) => ({
+      provNum: p.ProvNum || p.provNum,
+      firstName: p.FName || p.firstName || '',
+      lastName: p.LName || p.lastName || '',
+      abbr: p.Abbr || p.abbr,
+      suffix: p.Suffix || p.suffix,
+      npi: p.NationalProvID || p.npi,
+      stateLicense: p.StateLicense || p.stateLicense,
+      specialty: p.Specialty || p.specialty,
+      isHidden: p.IsHidden ?? p.isHidden,
+    }));
   }
 
   async fetchOperatories(): Promise<PmsOperatory[]> {
@@ -540,7 +553,17 @@ export class OpenDentalAdapter implements PmsAdapter {
 
     const endpoint = '/operatories';
     const data = await this.makeRequest(endpoint);
-    return data || [];
+    
+    // Map Open Dental field names to our interface
+    // Open Dental uses: OperatoryNum, OpName, Abbrev, IsHidden, ItemOrder, IsHygiene
+    return (data || []).map((o: any) => ({
+      operatoryNum: o.OperatoryNum || o.operatoryNum,
+      opName: o.OpName || o.opName || '',
+      abbrev: o.Abbrev || o.abbrev,
+      isHidden: o.IsHidden ?? o.isHidden,
+      itemOrder: o.ItemOrder || o.itemOrder,
+      isHygiene: o.IsHygiene ?? o.isHygiene,
+    }));
   }
 
   /**
