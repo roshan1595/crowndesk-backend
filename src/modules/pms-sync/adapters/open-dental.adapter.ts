@@ -410,6 +410,11 @@ export class OpenDentalAdapter implements PmsAdapter {
   async fetchInsurancePlans(since?: Date): Promise<PmsInsurancePlan[]> {
     this.logger.log(`Fetching insurance plans from Open Dental${since ? ` since ${since.toISOString()}` : ''}`);
 
+    // First fetch carriers to get carrier names
+    const carriers = await this.fetchCarriers();
+    const carrierMap = new Map(carriers.map(c => [c.carrierNum, c.carrierName]));
+    this.logger.debug(`[Open Dental] Loaded ${carrierMap.size} carriers for lookup`);
+
     const params = new URLSearchParams();
     if (since) {
       params.append('DateTStamp', since.toISOString().split('T')[0]);
@@ -418,7 +423,26 @@ export class OpenDentalAdapter implements PmsAdapter {
     const endpoint = `/insplans${params.toString() ? '?' + params.toString() : ''}`;
     const data = await this.makeRequest(endpoint);
     
-    return (data || []).map((plan: any) => this.mapInsurancePlan(plan));
+    return (data || []).map((plan: any) => this.mapInsurancePlan(plan, carrierMap));
+  }
+
+  /**
+   * Fetch insurance carriers from Open Dental
+   * Carriers contain the actual carrier names (e.g., "Cigna", "Delta Dental")
+   */
+  async fetchCarriers(): Promise<{ carrierNum: string; carrierName: string }[]> {
+    this.logger.log('Fetching insurance carriers from Open Dental');
+    
+    try {
+      const data = await this.makeRequest('/carriers');
+      return (data || []).map((carrier: any) => ({
+        carrierNum: carrier.CarrierNum?.toString() || '',
+        carrierName: carrier.CarrierName || '',
+      }));
+    } catch (error: any) {
+      this.logger.warn(`Failed to fetch carriers: ${error.message}. CarrierName will be empty.`);
+      return [];
+    }
   }
 
   async fetchInsuranceSubscriptions(patientPmsId?: string): Promise<PmsInsuranceSubscription[]> {
@@ -724,10 +748,19 @@ export class OpenDentalAdapter implements PmsAdapter {
     };
   }
 
-  private mapInsurancePlan(odPlan: any): PmsInsurancePlan {
+  private mapInsurancePlan(odPlan: any, carrierMap?: Map<string, string>): PmsInsurancePlan {
+    // Open Dental /insplans returns CarrierNum (FK to carrier table)
+    // We need to lookup the actual CarrierName from the carrier map
+    const carrierNum = odPlan.CarrierNum?.toString() || '';
+    const carrierName = carrierMap?.get(carrierNum) || odPlan.CarrierName || '';
+    
+    if (!carrierName && carrierNum) {
+      this.logger.debug(`[Open Dental] No carrier name found for CarrierNum: ${carrierNum}`);
+    }
+    
     return {
       pmsId: odPlan.PlanNum?.toString() || '',
-      carrierName: odPlan.CarrierName || '',
+      carrierName: carrierName,
       payerId: odPlan.ElectID || undefined,
       groupName: odPlan.GroupName || undefined,
       groupNumber: odPlan.GroupNum || undefined,

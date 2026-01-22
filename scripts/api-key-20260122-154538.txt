@@ -1,0 +1,53 @@
+﻿CrownDesk Service API Key
+Generated: 01/22/2026 15:45:38
+
+API Key (SAVE SECURELY):
+sk_test_
+
+Configuration:
+- Name: ElevenLabs AI Receptionist
+- Service Type: ai_agent
+- Tenant ID: c6adcec0-cfaf-4716-80c5-cc28ccab57c6
+- Expires: 2027-01-22T15:45:38.848Z
+
+Key Hash (for reference):
+7e8d70a19c0d4a68bab7bf1591e712698cd6e51a304294b49ff9b64c970e2d08
+
+SQL Insert Statement:
+INSERT INTO service_api_keys (
+  id,
+  tenant_id,
+  name,
+  key_hash,
+  service_type,
+  description,
+  is_active,
+  expires_at,
+  created_at,
+  updated_at
+) VALUES (
+  uuid_generate_v4(),
+  'c6adcec0-cfaf-4716-80c5-cc28ccab57c6',
+  'ElevenLabs AI Receptionist',
+  '7e8d70a19c0d4a68bab7bf1591e712698cd6e51a304294b49ff9b64c970e2d08',
+  'ai_agent',
+  'AI agent for voice receptionist - handles appointment booking, patient lookup, insurance verification',
+  true,
+  '2027-01-22T15:45:38.848Z',
+  NOW(),
+  NOW()
+);
+
+ElevenLabs Configuration:
+{
+  "request_headers": [
+    {
+      "name": "Authorization",
+      "value": "Bearer sk_test_"
+    },
+    {
+      "name": "x-tenant-id",
+      "value": "c6adcec0-cfaf-4716-80c5-cc28ccab57c6"
+    }
+  ]
+}

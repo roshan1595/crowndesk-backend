@@ -459,6 +459,9 @@ export class PmsSyncService {
       case 'procedure':
       case 'completed_procedure':
         return this.syncProceduresFromPms(tenantId);
+      case 'treatment_plan':
+      case 'treatment':
+        return this.syncTreatmentPlansFromPms(tenantId);
       default:
         return { message: `Sync not implemented for ${entityType}` };
     }
@@ -558,6 +561,133 @@ export class PmsSyncService {
     }
 
     this.logger.log(`Procedure sync complete: ${created} created, ${updated} updated, ${errors} errors`);
+    return { created, updated, errors };
+  }
+
+  /**
+   * Sync treatment plans from PMS to CrownDesk
+   * Treatment plans contain proposed procedures with fees and insurance estimates
+   */
+  async syncTreatmentPlansFromPms(tenantId: string): Promise<SyncResult> {
+    if (!this.isConfigured()) {
+      this.logger.warn('PMS not configured, skipping treatment plan sync');
+      return { created: 0, updated: 0, errors: 0 };
+    }
+
+    const treatmentPlans = await this.openDental.fetchTreatmentPlans();
+    let created = 0;
+    let updated = 0;
+    let errors = 0;
+
+    for (const plan of treatmentPlans) {
+      try {
+        // Find the patient mapping
+        const patientMapping = await this.prisma.pmsMapping.findFirst({
+          where: {
+            tenantId,
+            pmsSource: 'open_dental',
+            entityType: 'patient',
+            pmsId: plan.patientPmsId,
+          },
+        });
+
+        if (!patientMapping) {
+          this.logger.warn(`Patient not found for PMS ID "${plan.patientPmsId}", skipping treatment plan`);
+          continue;
+        }
+
+        // Check for existing treatment plan mapping
+        const existingMapping = await this.prisma.pmsMapping.findFirst({
+          where: {
+            tenantId,
+            pmsSource: 'open_dental',
+            entityType: 'treatment_plan',
+            pmsId: plan.pmsId,
+          },
+        });
+
+        // Calculate totals from procedures
+        const totalFee = plan.procedures.reduce((sum, p) => sum + (p.fee || 0), 0);
+        const statusMap: Record<string, 'draft' | 'presented' | 'accepted' | 'in_progress' | 'completed' | 'cancelled'> = {
+          active: 'accepted',
+          inactive: 'cancelled',
+          saved: 'draft',
+        };
+
+        const planData = {
+          name: plan.heading || `Treatment Plan ${plan.pmsId}`,
+          description: plan.note,
+          status: statusMap[plan.status] || 'draft',
+          totalFee,
+          insuranceEstimate: 0, // Would need to calculate from benefits
+          patientEstimate: totalFee, // Simplified
+        };
+
+        if (existingMapping) {
+          // Update existing treatment plan
+          await this.prisma.treatmentPlan.update({
+            where: { id: existingMapping.crownDeskId },
+            data: planData,
+          });
+          updated++;
+        } else {
+          // Create new treatment plan
+          const newPlan = await this.prisma.treatmentPlan.create({
+            data: {
+              tenantId,
+              patientId: patientMapping.crownDeskId,
+              ...planData,
+            },
+          });
+
+          // Create mapping
+          await this.prisma.pmsMapping.create({
+            data: {
+              tenantId,
+              pmsSource: 'open_dental',
+              entityType: 'treatment_plan',
+              pmsId: plan.pmsId,
+              crownDeskId: newPlan.id,
+              lastSyncedAt: new Date(),
+            },
+          });
+
+          // Create default phase and procedures
+          if (plan.procedures.length > 0) {
+            const phase = await this.prisma.treatmentPhase.create({
+              data: {
+                treatmentPlanId: newPlan.id,
+                phaseNumber: 1,
+                name: 'Phase 1',
+                priority: 'medium',
+                status: 'pending',
+              },
+            });
+
+            // Add planned procedures
+            for (const proc of plan.procedures) {
+              await this.prisma.plannedProcedure.create({
+                data: {
+                  phaseId: phase.id,
+                  cdtCode: proc.procCode || '',
+                  description: proc.description || '',
+                  toothNumbers: proc.toothNum ? [proc.toothNum] : [],
+                  surfaces: proc.surface ? [proc.surface] : [],
+                  fee: proc.fee || 0,
+                },
+              });
+            }
+          }
+
+          created++;
+        }
+      } catch (error: any) {
+        this.logger.error(`Error syncing treatment plan ${plan.pmsId}: ${error.message}`);
+        errors++;
+      }
+    }
+
+    this.logger.log(`Treatment plan sync complete: ${created} created, ${updated} updated, ${errors} errors`);
     return { created, updated, errors };
   }
 
@@ -892,6 +1022,7 @@ export class PmsSyncService {
       appointments: await this.syncAppointmentsFromPms(tenantId),
       insurance: await this.syncInsuranceFromPms(tenantId),
       procedures: await this.syncProceduresFromPms(tenantId),
+      treatmentPlans: await this.syncTreatmentPlansFromPms(tenantId),
     };
     
     const duration = ((Date.now() - startTime) / 1000).toFixed(2);

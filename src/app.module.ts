@@ -55,6 +55,7 @@ import { AgentsModule } from './modules/agents/agents.module';
 import { CallsModule } from './modules/calls/calls.module';
 import { RegistrationModule } from './modules/registration/registration.module';
 import { TwilioVoiceModule } from './modules/twilio/twilio-voice.module';
+import { AiAgentModule } from './modules/ai-agent/ai-agent.module';
 
 @Module({
   imports: [
@@ -109,6 +110,7 @@ import { TwilioVoiceModule } from './modules/twilio/twilio-voice.module';
     CallsModule,
     RegistrationModule,
     TwilioVoiceModule,
+    AiAgentModule,
   ],
   providers: [
     // Global authentication guard
