@@ -980,6 +980,9 @@ model AgentConfig {
   executionSchedule String? @map("execution_schedule") // Cron expression
   batchSize       Int?     @map("batch_size") // For batch processing
   priority        Int?     @default(5) // 1-10 priority level
+  triggerModes    Json?    @map("trigger_modes") // ["always_on", "scheduled", "manual"]
+  lastRunAt       DateTime? @map("last_run_at")
+  nextRunAt       DateTime? @map("next_run_at")
   
   // Status
   status          AgentStatus @default(INACTIVE)
@@ -1788,4 +1791,215 @@ enum RegistrationStage {
   form_submitted    // Patient submitted the form
   verified          // Staff verified the registration
   completed         // Full registration complete
+}
+
+// ===========================================
+// Section 12: Automation Agent Work Items
+// ===========================================
+
+// Coding Task - AI-suggested CDT codes for review
+model CodingTask {
+  id                   String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId             String            @map("tenant_id") @db.Uuid
+  completedProcedureId String            @map("completed_procedure_id") @db.Uuid
+  automationRunId      String?           @map("automation_run_id") @db.Uuid
+  
+  // Clinical Input
+  clinicalNotes        String?           @map("clinical_notes") @db.Text
+  originalCdtCode      String?           @map("original_cdt_code")
+  
+  // AI Suggestions
+  suggestedCodes       Json              @map("suggested_codes") // [{code, description, confidence, reasoning}]
+  llmModel             String?           @map("llm_model") @default("gpt-4")
+  llmResponse          Json?             @map("llm_response") // Raw LLM response for debugging
+  
+  // Review
+  status               CodingTaskStatus  @default(pending_review)
+  reviewedBy           String?           @map("reviewed_by") @db.Uuid
+  reviewedAt           DateTime?         @map("reviewed_at")
+  
+  // Final Selection
+  selectedCode         String?           @map("selected_code")
+  selectedReason       String?           @map("selected_reason") @db.Text
+  
+  // Timestamps
+  createdAt            DateTime          @default(now()) @map("created_at")
+  updatedAt            DateTime          @updatedAt @map("updated_at")
+  
+  @@unique([tenantId, completedProcedureId])
+  @@index([tenantId, status])
+  @@index([createdAt])
+  @@map("coding_tasks")
+}
+
+enum CodingTaskStatus {
+  pending_review
+  approved
+  rejected
+  modified
+}
+
+// Denial Analysis - AI analysis of denied claims
+model DenialAnalysis {
+  id                 String                @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId           String                @map("tenant_id") @db.Uuid
+  claimId            String                @unique @map("claim_id") @db.Uuid
+  automationRunId    String?               @map("automation_run_id") @db.Uuid
+  
+  // Denial Information
+  denialCodes        Json                  @map("denial_codes") // [{code, description}]
+  denialDate         DateTime?             @map("denial_date") @db.Date
+  
+  // AI Analysis
+  rootCause          String                @map("root_cause") @db.Text
+  suggestedActions   Json                  @map("suggested_actions") // [{action, priority, description}]
+  appealLikelihood   String                @map("appeal_likelihood") // high, medium, low
+  appealDraft        String?               @map("appeal_draft") @db.Text
+  
+  // LLM Details
+  llmModel           String?               @map("llm_model") @default("gpt-4")
+  llmResponse        Json?                 @map("llm_response")
+  
+  // Review
+  status             DenialAnalysisStatus  @default(pending_review)
+  reviewedBy         String?               @map("reviewed_by") @db.Uuid
+  reviewedAt         DateTime?             @map("reviewed_at")
+  
+  // Appeal Tracking
+  appealPreparedAt   DateTime?             @map("appeal_prepared_at")
+  appealSubmittedAt  DateTime?             @map("appeal_submitted_at")
+  appealOutcome      String?               @map("appeal_outcome")
+  
+  // Timestamps
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @updatedAt @map("updated_at")
+  
+  @@index([tenantId, status])
+  @@index([createdAt])
+  @@map("denial_analyses")
+}
+
+enum DenialAnalysisStatus {
+  pending_review
+  approved
+  appealing
+  resubmitting
+  appeal_won
+  appeal_lost
+  closed
+}
+
+// Payment Reminder - Track sent reminders
+model PaymentReminder {
+  id             String                 @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId       String                 @map("tenant_id") @db.Uuid
+  invoiceId      String                 @map("invoice_id") @db.Uuid
+  patientId      String                 @map("patient_id") @db.Uuid
+  automationRunId String?               @map("automation_run_id") @db.Uuid
+  
+  // Reminder Details
+  reminderType   ReminderType           @map("reminder_type")
+  channel        ReminderChannel
+  
+  // Content
+  subject        String?
+  body           String?                @db.Text
+  
+  // Delivery
+  sentAt         DateTime?              @map("sent_at")
+  deliveredAt    DateTime?              @map("delivered_at")
+  failedAt       DateTime?              @map("failed_at")
+  failureReason  String?                @map("failure_reason")
+  
+  // Response
+  openedAt       DateTime?              @map("opened_at")
+  clickedAt      DateTime?              @map("clicked_at")
+  paidAt         DateTime?              @map("paid_at")
+  
+  // Timestamps
+  createdAt      DateTime               @default(now()) @map("created_at")
+  
+  @@index([tenantId, invoiceId])
+  @@index([sentAt])
+  @@map("payment_reminders")
+}
+
+enum ReminderType {
+  first_reminder     // 30 days overdue
+  second_reminder    // 60 days overdue
+  final_notice       // 90+ days overdue
+  pre_collection     // Before sending to collections
+}
+
+enum ReminderChannel {
+  email
+  sms
+  portal
+  phone
+}
+
+// Appointment Optimization Suggestion
+model AppointmentSuggestion {
+  id                String                    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId          String                    @map("tenant_id") @db.Uuid
+  automationRunId   String?                   @map("automation_run_id") @db.Uuid
+  
+  // Slot to Fill
+  slotDate          DateTime                  @map("slot_date") @db.Date
+  slotTime          String                    @map("slot_time")
+  slotDuration      Int                       @map("slot_duration") // minutes
+  providerId        String?                   @map("provider_id") @db.Uuid
+  
+  // Reason for Opening
+  openingReason     SlotOpeningReason         @map("opening_reason")
+  originalApptId    String?                   @map("original_appt_id") @db.Uuid
+  
+  // Candidate Patient
+  candidatePatientId String                   @map("candidate_patient_id") @db.Uuid
+  candidateReason   String?                   @map("candidate_reason") // recall_due, waitlist, flexible
+  candidateScore    Int?                      @map("candidate_score") // 1-100 priority score
+  
+  // Outreach
+  status            SuggestionStatus          @default(pending)
+  contactAttempts   Int                       @default(0) @map("contact_attempts")
+  lastContactAt     DateTime?                 @map("last_contact_at")
+  contactMethod     String?                   @map("contact_method") // phone, sms, email
+  
+  // Outcome
+  outcome           SuggestionOutcome?
+  newAppointmentId  String?                   @map("new_appointment_id") @db.Uuid
+  
+  // Timestamps
+  createdAt         DateTime                  @default(now()) @map("created_at")
+  updatedAt         DateTime                  @updatedAt @map("updated_at")
+  
+  @@index([tenantId, status])
+  @@index([slotDate])
+  @@map("appointment_suggestions")
+}
+
+enum SlotOpeningReason {
+  cancellation
+  no_show
+  gap_detected
+  recall_campaign
+}
+
+enum SuggestionStatus {
+  pending
+  contacting
+  contacted
+  accepted
+  declined
+  no_response
+  expired
+}
+
+enum SuggestionOutcome {
+  booked
+  declined
+  rescheduled_later
+  no_answer
+  wrong_number
+  not_interested
 }

@@ -11,14 +11,34 @@ import { AgentsService } from './agents.service';
 import { RetellService } from './retell.service';
 import { AutomationAgentsController } from './automation-agents.controller';
 import { AutomationAgentsService } from './automation-agents.service';
+import { CodingTasksController } from './coding-tasks.controller';
+import { CodingTasksService } from './coding-tasks.service';
+import { DenialAnalysisController } from './denial-analysis.controller';
+import { DenialAnalysisService } from './denial-analysis.service';
 import { PrismaModule } from '../../common/prisma/prisma.module';
 import { AuditModule } from '../audit/audit.module';
 
 @Module({
   imports: [PrismaModule, AuditModule, HttpModule],
-  controllers: [AgentsController, AutomationAgentsController],
-  providers: [AgentsService, RetellService, AutomationAgentsService],
-  exports: [AgentsService, AutomationAgentsService],
+  controllers: [
+    AgentsController,
+    AutomationAgentsController,
+    CodingTasksController,
+    DenialAnalysisController,
+  ],
+  providers: [
+    AgentsService,
+    RetellService,
+    AutomationAgentsService,
+    CodingTasksService,
+    DenialAnalysisService,
+  ],
+  exports: [
+    AgentsService,
+    AutomationAgentsService,
+    CodingTasksService,
+    DenialAnalysisService,
+  ],
 })
 export class AgentsModule {}
 
