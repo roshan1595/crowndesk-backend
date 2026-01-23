@@ -154,6 +154,7 @@ export class AiAgentController {
       startTime: string;
       endTime: string;
       appointmentType: string;
+      provider?: string;
       status?: string;
       notes?: string;
     },
@@ -163,6 +164,7 @@ export class AiAgentController {
       'ai-agent', // System user ID for AI agent actions
       {
         patientId: body.patientId,
+        provider: body.provider || 'AI Agent', // Required field - default to AI Agent if not specified
         startTime: new Date(body.startTime),
         endTime: new Date(body.endTime),
         appointmentType: body.appointmentType as any,
