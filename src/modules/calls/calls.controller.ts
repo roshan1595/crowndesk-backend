@@ -49,16 +49,19 @@ export class CallsController {
     @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit?: number,
     @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset?: number,
   ) {
-    // Parse comma-separated status values into array
+    // Parse comma-separated status values and filter out invalid ones
+    const validStatuses: CallStatus[] = ['in_progress', 'completed', 'transferred', 'failed', 'voicemail'];
     const status = statusParam 
-      ? statusParam.split(',').map(s => s.trim()) as CallStatus[]
+      ? statusParam.split(',')
+          .map(s => s.trim())
+          .filter(s => validStatuses.includes(s as CallStatus)) as CallStatus[]
       : undefined;
 
     return this.callsService.listCalls(req.user.tenantId, {
       startDate: startDate ? new Date(startDate) : undefined,
       endDate: endDate ? new Date(endDate) : undefined,
       agentId,
-      status,
+      status: status && status.length > 0 ? status : undefined,
       patientId,
       phoneNumber,
       intent,
