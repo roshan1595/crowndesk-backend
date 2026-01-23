@@ -100,7 +100,7 @@ export class ServiceAuthGuard implements CanActivate {
 
       // Attach service context to request
       request.serviceAuth = {
-        serviceType: apiKeyRecord.serviceType,
+        serviceType: apiKeyRecord.serviceType as 'ai_agent' | 'webhook' | 'integration',
         serviceName: apiKeyRecord.name,
         tenantId: apiKeyRecord.tenantId,
         apiKeyId: apiKeyRecord.id,

@@ -14,9 +14,9 @@ import {
   HttpCode,
 } from '@nestjs/common';
 import { ApiTags, ApiBearerAuth, ApiOperation } from '@nestjs/swagger';
-import { ServiceApiKeysService } from './service-api-keys.service';
-import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { AuthenticatedUser } from '../auth/guards/clerk-auth.guard';
+import { ServiceApiKeysService } from '../services/service-api-keys.service';
+import { CurrentUser } from '../decorators/current-user.decorator';
+import { AuthenticatedUser } from '../guards/clerk-auth.guard';
 
 @ApiTags('service-api-keys')
 @ApiBearerAuth('clerk-jwt')
