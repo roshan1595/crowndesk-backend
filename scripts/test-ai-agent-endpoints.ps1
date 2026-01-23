@@ -172,7 +172,7 @@ if ($existingPatientId) {
             patientId = $existingPatientId
             startTime = $startTime
             endTime = $endTime
-            appointmentType = "cleaning"
+            appointmentType = "hygiene"
             notes = "Test appointment from endpoint test script"
         }
     
@@ -198,7 +198,7 @@ if ($newPatientId) {
             patientId = $newPatientId
             startTime = $startTime
             endTime = $endTime
-            appointmentType = "exam"
+            appointmentType = "consultation"
             notes = "First appointment for new patient"
         }
     
