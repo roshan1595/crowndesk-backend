@@ -126,18 +126,19 @@ Test-Endpoint `
     -Url "$baseUrl/patients/search" `
     -Body @{ q = "NonExistentPatient12345XYZ" }
 
-# Test 4: Create New Patient
+# Test 4: Create New Patient (with unique values)
+$timestamp = (Get-Date).ToString("HHmmss")
 $newPatientResponse = Test-Endpoint `
     -Name "Create New Patient" `
     -Method "POST" `
     -Url "$baseUrl/patients" `
     -Body @{
-        firstName = "TestAI"
-        lastName = "Patient"
-        dateOfBirth = "1990-05-15"
-        phone = "555-TEST-001"
-        email = "testai@example.com"
-        address = "123 Test Street, Test City, Test State 12345"
+        firstName = "NewPatient"
+        lastName = "Test$timestamp"
+        dateOfBirth = "1995-08-20"
+        phone = "555-NEW-$timestamp"
+        email = "newpatient$timestamp@example.com"
+        address = "456 New Street, Test City, Test State 54321"
     }
 
 # Save new patient ID for appointment test
