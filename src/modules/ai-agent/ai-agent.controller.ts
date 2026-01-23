@@ -155,7 +155,6 @@ export class AiAgentController {
       endTime: string;
       appointmentType: string;
       provider?: string;
-      status?: string;
       notes?: string;
     },
   ) {
@@ -168,8 +167,8 @@ export class AiAgentController {
         startTime: new Date(body.startTime),
         endTime: new Date(body.endTime),
         appointmentType: body.appointmentType as any,
-        status: (body.status as any) || 'scheduled',
         notes: body.notes,
+        // Note: status is automatically set to 'scheduled' by the service
       },
     );
   }
