@@ -802,19 +802,32 @@ enum DocumentType {
 model CallRecord {
   id            String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   tenantId      String       @map("tenant_id") @db.Uuid
-  retellCallId  String       @unique @map("retell_call_id") // Retell's call ID
+  
+  // Twilio Integration
+  twilioCallSid   String?    @unique @map("twilio_call_sid") // Twilio's Call SID
+  elevenLabsConversationId String? @map("elevenlabs_conversation_id") // ElevenLabs session ID
+  
   patientId     String?      @map("patient_id") @db.Uuid // If patient identified
   
-  // Agent Management Integration (NEW)
+  // Agent Management Integration
   agentConfigId   String?  @map("agent_config_id") @db.Uuid
   phoneNumberId   String?  @map("phone_number_id") @db.Uuid
   
   // Call Details
   phoneNumber   String?      @map("phone_number") // Caller's number (scrubbed for storage)
+  callerName    String?      @map("caller_name") // Caller ID name if available
   direction     CallDirection @default(inbound)
   startTime     DateTime     @map("start_time")
   endTime       DateTime?    @map("end_time")
   durationSecs  Int?         @map("duration_secs")
+  
+  // Routing Information
+  routingDecision   String?  @map("routing_decision") // 'ai_handled' | 'forwarded' | 'voicemail' | 'emergency' | 'after_hours'
+  routedToNumber    String?  @map("routed_to_number")
+  routedToName      String?  @map("routed_to_name")
+  wasEmergency      Boolean  @default(false) @map("was_emergency")
+  wasAfterHours     Boolean  @default(false) @map("was_after_hours")
+  queueWaitSeconds  Int?     @map("queue_wait_seconds")
   
   // Status
   status        CallStatus   @default(in_progress)
@@ -826,7 +839,7 @@ model CallRecord {
   appointmentId String?      @map("appointment_id") @db.Uuid // If appointment was booked
   transferredTo String?      @map("transferred_to") // If transferred to human
   
-  // Call Quality Metrics (NEW)
+  // Call Quality Metrics
   qualityScore    Float?   @map("quality_score") // 0-10
   userSatisfaction Int?    @map("user_satisfaction") // 1-5 stars
   wasEscalated    Boolean  @default(false) @map("was_escalated")
@@ -837,8 +850,9 @@ model CallRecord {
   summary       String?      @db.Text // AI-generated summary
   
   // Audio (optional)
-  recordingUrl  String?      @map("recording_url") // S3 URL
+  recordingUrl  String?      @map("recording_url") // S3/Twilio URL
   recordingKey  String?      @map("recording_key") // S3 key
+  recordingSid  String?      @map("recording_sid") // Twilio Recording SID
   
   // Metadata
   metadata      Json?
@@ -969,14 +983,49 @@ model AgentConfig {
   agentCategory   AgentCategory @default(VOICE) @map("agent_category")
   agentType       AgentType @default(VOICE_RECEPTIONIST)
   
-  // Voice Agent (Retell Integration) - Nullable for automation agents
-  retellAgentId   String?  @unique @map("retell_agent_id") // From Retell API
+  // Voice Agent (ElevenLabs Integration) - Nullable for automation agents
+  elevenLabsAgentId String?  @unique @map("elevenlabs_agent_id") // From ElevenLabs Conversational AI
   voiceId         String?  @map("voice_id") @default("eleven_labs_rachel")
   language        String   @default("en-US")
-  workingHours    Json?    @map("working_hours") // {monday: {start: "09:00", end: "17:00"}}
-  transferNumber  String?  @map("transfer_number") // Human fallback
   
+  // ============================================
+  // Call Routing Configuration
+  // ============================================
+  
+  // Business Hours Management
+  workingHours    Json?    @map("working_hours") @db.JsonB // {enabled, timezone, schedule: {monday: {enabled, open, close, lunchStart, lunchEnd}, ...}, holidays: [{date, name, emergencyOnly}]}
+  
+  // Routing Numbers
+  fallbackNumber        String?  @map("fallback_number") @db.VarChar(20)      // When agent offline/unavailable
+  afterHoursNumber      String?  @map("after_hours_number") @db.VarChar(20)   // Outside business hours
+  emergencyNumber       String?  @map("emergency_number") @db.VarChar(20)     // 24/7 emergency line
+  transferNumbers       Json?    @map("transfer_numbers") @db.JsonB           // [{name, number, role, priority, available}]
+  
+  // Call Queue Settings  
+  callQueueEnabled      Boolean  @default(false) @map("call_queue_enabled")
+  maxQueueSize          Int      @default(5) @map("max_queue_size")
+  maxQueueWaitSeconds   Int      @default(300) @map("max_queue_wait_seconds")  // 5 minutes default
+  
+  // Overflow Handling
+  overflowAction        String?  @map("overflow_action") @db.VarChar(20)      // 'voicemail' | 'forward' | 'callback'
+  overflowNumber        String?  @map("overflow_number") @db.VarChar(20)      // Number to forward on overflow
+  
+  // Emergency Detection
+  emergencyKeywords     String[] @default(["emergency", "urgent", "severe pain", "bleeding", "swelling", "trauma", "accident"]) @map("emergency_keywords")
+  emergencyBypass       Boolean  @default(true) @map("emergency_bypass")       // Bypass queue for emergencies
+  
+  // Routing Statistics
+  totalCallsRouted      Int      @default(0) @map("total_calls_routed")
+  emergencyCallsRouted  Int      @default(0) @map("emergency_calls_routed")
+  fallbackRoutedCalls   Int      @default(0) @map("fallback_routed_calls")
+  afterHoursRoutedCalls Int      @default(0) @map("after_hours_routed_calls")
+  
+  // Legacy field (kept for migration compatibility)
+  transferNumber  String?  @map("transfer_number") // Human fallback - DEPRECATED, use transferNumbers
+  
+  // ============================================
   // Automation Agent - Nullable for voice agents
+  // ============================================
   executionSchedule String? @map("execution_schedule") // Cron expression
   batchSize       Int?     @map("batch_size") // For batch processing
   priority        Int?     @default(5) // 1-10 priority level
@@ -1679,7 +1728,7 @@ enum PhoneStatus {
 }
 
 enum AgentCategory {
-  VOICE         // Phone-based agents (Retell AI)
+  VOICE         // Phone-based agents (Twilio + ElevenLabs)
   AUTOMATION    // Backend automation agents
 }
 

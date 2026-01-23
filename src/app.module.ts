@@ -53,6 +53,7 @@ import { CompletedProceduresModule } from './modules/completed-procedures/comple
 import { PhoneNumbersModule } from './modules/phone-numbers/phone-numbers.module';
 import { AgentsModule } from './modules/agents/agents.module';
 import { CallsModule } from './modules/calls/calls.module';
+import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { RegistrationModule } from './modules/registration/registration.module';
 import { TwilioVoiceModule } from './modules/twilio/twilio-voice.module';
 import { AiAgentModule } from './modules/ai-agent/ai-agent.module';
@@ -109,6 +110,7 @@ import { ServiceAuthGuard } from './common/auth/guards/service-auth.guard';
     PhoneNumbersModule,
     AgentsModule,
     CallsModule,
+    WebhooksModule,
     RegistrationModule,
     TwilioVoiceModule,
     AiAgentModule,

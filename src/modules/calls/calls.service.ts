@@ -268,12 +268,27 @@ export class CallsService {
   }
 
   /**
-   * Get call by Retell call ID (for webhook processing)
+   * Get call by Twilio Call SID (for webhook processing)
    */
-  async getCallByRetellId(retellCallId: string) {
+  async getCallByTwilioSid(twilioCallSid: string) {
     return this.prisma.callRecord.findUnique({
       where: {
-        retellCallId,
+        twilioCallSid,
+      },
+      include: {
+        agentConfig: true,
+        patient: true,
+      },
+    });
+  }
+  
+  /**
+   * Get call by ElevenLabs conversation ID
+   */
+  async getCallByElevenLabsId(elevenLabsConversationId: string) {
+    return this.prisma.callRecord.findFirst({
+      where: {
+        elevenLabsConversationId,
       },
       include: {
         agentConfig: true,
@@ -316,7 +331,8 @@ export class CallsService {
    */
   async createCall(data: {
     tenantId: string;
-    retellCallId: string;
+    twilioCallSid: string;
+    elevenLabsConversationId?: string;
     agentConfigId?: string;
     phoneNumberId?: string;
     patientId?: string;
@@ -346,7 +362,8 @@ export class CallsService {
     return this.prisma.callRecord.create({
       data: {
         tenantId,
-        retellCallId: data.retellCallId,
+        twilioCallSid: data.twilioCallSid,
+        elevenLabsConversationId: data.elevenLabsConversationId,
         agentConfigId: data.agentConfigId,
         phoneNumberId: data.phoneNumberId,
         patientId: data.patientId,

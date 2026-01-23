@@ -19,6 +19,7 @@ import {
 } from '@nestjs/common';
 import { ClerkAuthGuard, AuthenticatedUser } from '../../common/auth/guards/clerk-auth.guard';
 import { AgentsService } from './agents.service';
+import { CallRoutingService, UpdateRoutingConfigDto, TransferNumber, WorkingHoursConfig } from './call-routing.service';
 import { AgentType, AgentStatus, AgentCategory } from '@prisma/client';
 
 interface AuthRequest extends Request {
@@ -28,7 +29,10 @@ interface AuthRequest extends Request {
 @Controller('agents')
 @UseGuards(ClerkAuthGuard)
 export class AgentsController {
-  constructor(private readonly agentsService: AgentsService) {}
+  constructor(
+    private readonly agentsService: AgentsService,
+    private readonly callRoutingService: CallRoutingService,
+  ) {}
 
   /**
    * POST /api/agents
@@ -86,6 +90,15 @@ export class AgentsController {
   @Get('stats')
   async getStatistics(@Request() req: AuthRequest) {
     return this.agentsService.getStatistics(req.user.tenantId);
+  }
+
+  /**
+   * GET /api/agents/receptionist
+   * Get or auto-create the AI receptionist agent
+   */
+  @Get('receptionist')
+  async getReceptionist(@Request() req: AuthRequest) {
+    return this.agentsService.ensureReceptionistAgent(req.user.tenantId, req.user.userId);
   }
 
   /**
@@ -157,5 +170,88 @@ export class AgentsController {
   @HttpCode(HttpStatus.OK)
   async deleteAgent(@Request() req: AuthRequest, @Param('id') id: string) {
     return this.agentsService.deleteAgent(req.user.tenantId, req.user.userId, id);
+  }
+
+  // ============================================
+  // Call Routing Endpoints
+  // ============================================
+
+  /**
+   * GET /api/agents/:id/routing
+   * Get routing configuration for an agent
+   */
+  @Get(':id/routing')
+  async getRoutingConfig(@Request() req: AuthRequest, @Param('id') id: string) {
+    // First verify tenant has access to this agent
+    await this.agentsService.getAgent(req.user.tenantId, id);
+    return this.callRoutingService.getRoutingConfig(id);
+  }
+
+  /**
+   * PUT /api/agents/:id/routing
+   * Update routing configuration for an agent
+   */
+  @Put(':id/routing')
+  async updateRoutingConfig(
+    @Request() req: AuthRequest,
+    @Param('id') id: string,
+    @Body() body: UpdateRoutingConfigDto,
+  ) {
+    return this.callRoutingService.updateRoutingConfig(id, req.user.tenantId, body);
+  }
+
+  /**
+   * GET /api/agents/:id/routing/status
+   * Get current routing status (where calls are being routed right now)
+   */
+  @Get(':id/routing/status')
+  async getRoutingStatus(@Request() req: AuthRequest, @Param('id') id: string) {
+    // First verify tenant has access to this agent
+    await this.agentsService.getAgent(req.user.tenantId, id);
+    return this.callRoutingService.getRoutingStatus(id);
+  }
+
+  /**
+   * POST /api/agents/:id/routing/test
+   * Test routing decision without making actual call
+   */
+  @Post(':id/routing/test')
+  async testRouting(
+    @Request() req: AuthRequest,
+    @Param('id') id: string,
+    @Body() body: { callerInput?: string },
+  ) {
+    // First verify tenant has access to this agent
+    await this.agentsService.getAgent(req.user.tenantId, id);
+    return this.callRoutingService.determineRouting(id, body.callerInput);
+  }
+
+  /**
+   * GET /api/agents/:id/routing/defaults
+   * Get default working hours template
+   */
+  @Get(':id/routing/defaults')
+  async getRoutingDefaults(@Request() req: AuthRequest, @Param('id') id: string) {
+    // Verify tenant has access
+    await this.agentsService.getAgent(req.user.tenantId, id);
+    return {
+      workingHours: this.callRoutingService.getDefaultWorkingHours(),
+      emergencyKeywords: [
+        'emergency',
+        'urgent',
+        'severe pain',
+        'extreme pain',
+        'bleeding',
+        'swelling',
+        'trauma',
+        'accident',
+        'knocked out tooth',
+        'avulsed',
+        'broken tooth',
+        'fractured',
+        'abscess',
+        'infection',
+      ],
+    };
   }
 }

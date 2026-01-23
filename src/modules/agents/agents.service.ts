@@ -1,18 +1,19 @@
 /**
  * CrownDesk V2 - Agents Service
  * Manages AI agent configurations
+ * Updated to use ElevenLabs Conversational AI instead of Retell
  */
 
 import { Injectable, NotFoundException, BadRequestException, Logger, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
-import { RetellService } from './retell.service';
 import { AgentType, AgentStatus, AgentCategory } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
 
 export interface CreateAgentDto {
   agentName: string;
   agentType: AgentType;
-  agentCategory?: AgentCategory; // NEW: VOICE or AUTOMATION
+  agentCategory?: AgentCategory; // VOICE or AUTOMATION
   
   // Voice-specific fields
   voiceId?: string;
@@ -30,6 +31,9 @@ export interface CreateAgentDto {
   // Common fields
   customPrompt?: string;
   requireApproval?: boolean;
+  
+  // ElevenLabs configuration
+  elevenLabsAgentId?: string;
 }
 
 export interface UpdateAgentDto {
@@ -46,6 +50,7 @@ export interface UpdateAgentDto {
   executionSchedule?: string;
   batchSize?: number;
   priority?: number;
+  elevenLabsAgentId?: string;
 }
 
 @Injectable()
@@ -55,7 +60,7 @@ export class AgentsService {
   constructor(
     private prisma: PrismaService,
     private auditService: AuditService,
-    private retellService: RetellService,
+    private configService: ConfigService,
   ) {}
 
   /**
@@ -82,19 +87,14 @@ export class AgentsService {
       throw new ConflictException('Agent with this name already exists');
     }
 
-    // Create agent in Retell AI (only for VOICE agents)
-    let retellAgentId: string | undefined;
+    // For VOICE agents, use ElevenLabs Conversational AI
+    // The actual ElevenLabs agent is configured in the ElevenLabs dashboard
+    // and connected via WebSocket through Twilio's <Stream> 
+    let elevenLabsAgentId: string | undefined;
     if (agentCategory === 'VOICE') {
-      const retellAgent = await this.retellService.createAgent({
-        agent_name: dto.agentName,
-        voice_id: dto.voiceId || 'eleven_labs_rachel',
-        language: dto.language || 'en-US',
-        begin_message: dto.beginMessage || 'Hello! How can I help you today?',
-        general_prompt: dto.customPrompt || this.getDefaultPrompt(dto.agentType),
-        enable_backchannel: true,
-        ambient_sound: 'office',
-      });
-      retellAgentId = retellAgent.agent_id;
+      // Use provided ElevenLabs agent ID or default from environment
+      elevenLabsAgentId = dto.elevenLabsAgentId || this.configService.get<string>('ELEVENLABS_AGENT_ID');
+      this.logger.log(`Using ElevenLabs agent: ${elevenLabsAgentId}`);
     }
 
     // Create database record
@@ -105,9 +105,9 @@ export class AgentsService {
         agentType: dto.agentType,
         agentCategory,
         
-        // Voice-specific fields (nullable for automation agents)
-        retellAgentId,
-        voiceId: agentCategory === 'VOICE' ? (dto.voiceId || 'eleven_labs_rachel') : undefined,
+        // ElevenLabs configuration for voice agents
+        elevenLabsAgentId,
+        voiceId: agentCategory === 'VOICE' ? (dto.voiceId || '21m00Tcm4TlvDq8ikWAM') : undefined, // Rachel voice
         language: dto.language || 'en-US',
         customPrompt: dto.customPrompt,
         beginMessage: dto.beginMessage,
@@ -137,7 +137,7 @@ export class AgentsService {
         agentName: dto.agentName,
         agentType: dto.agentType,
         agentCategory,
-        retellAgentId,
+        elevenLabsAgentId,
       },
     });
 
@@ -200,6 +200,80 @@ export class AgentsService {
   }
 
   /**
+   * Ensure receptionist agent exists for tenant
+   * Auto-creates if not present (one per tenant)
+   */
+  async ensureReceptionistAgent(tenantId: string, userId: string) {
+    // Check if receptionist already exists
+    const existing = await this.prisma.agentConfig.findFirst({
+      where: {
+        tenantId,
+        agentCategory: AgentCategory.VOICE,
+        agentType: AgentType.VOICE_RECEPTIONIST,
+      },
+      include: {
+        phoneNumbers: {
+          select: {
+            id: true,
+            phoneNumber: true,
+            friendlyName: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    if (existing) {
+      return existing;
+    }
+
+    // Create default receptionist agent
+    this.logger.log(`Auto-creating receptionist agent for tenant: ${tenantId}`);
+    
+    const agent = await this.prisma.agentConfig.create({
+      data: {
+        tenantId,
+        agentName: 'AI Receptionist',
+        agentType: AgentType.VOICE_RECEPTIONIST,
+        agentCategory: AgentCategory.VOICE,
+        voiceId: 'default',
+        language: 'en-US',
+        beginMessage: 'Hello! Thank you for calling. How may I assist you today?',
+        status: AgentStatus.INACTIVE,
+        requireApproval: false,
+      },
+      include: {
+        phoneNumbers: {
+          select: {
+            id: true,
+            phoneNumber: true,
+            friendlyName: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    // Audit log
+    await this.auditService.log(tenantId, {
+      actorType: 'system',
+      actorId: 'auto-provision',
+      action: 'agent.auto_created',
+      entityType: 'agent',
+      entityId: agent.id,
+      metadata: {
+        agentName: 'AI Receptionist',
+        agentType: AgentType.VOICE_RECEPTIONIST,
+        agentCategory: AgentCategory.VOICE,
+      },
+    });
+
+    this.logger.log(`Auto-created receptionist agent: ${agent.id}`);
+
+    return agent;
+  }
+
+  /**
    * Get agent by ID
    */
   async getAgent(tenantId: string, id: string) {
@@ -251,18 +325,10 @@ export class AgentsService {
   async updateAgent(tenantId: string, userId: string, id: string, dto: UpdateAgentDto) {
     const agent = await this.getAgent(tenantId, id);
 
-    // Update Retell AI if configuration changed
-    if (dto.voiceId || dto.language || dto.customPrompt || dto.beginMessage) {
-      const retellConfig: any = {};
-
-      if (dto.voiceId) retellConfig.voice_id = dto.voiceId;
-      if (dto.language) retellConfig.language = dto.language;
-      if (dto.beginMessage) retellConfig.begin_message = dto.beginMessage;
-      if (dto.customPrompt) retellConfig.general_prompt = dto.customPrompt;
-
-      if (agent.retellAgentId) {
-        await this.retellService.updateAgent(agent.retellAgentId, retellConfig);
-      }
+    // For ElevenLabs, voice configuration is managed in their dashboard
+    // We just store the configuration locally for reference
+    if (dto.elevenLabsAgentId) {
+      this.logger.log(`Updating ElevenLabs agent ID to: ${dto.elevenLabsAgentId}`);
     }
 
     // Update database
@@ -279,6 +345,7 @@ export class AgentsService {
         transferNumber: dto.transferNumber,
         requireApproval: dto.requireApproval,
         maxCallDuration: dto.maxCallDuration,
+        elevenLabsAgentId: dto.elevenLabsAgentId,
       },
     });
 
@@ -372,20 +439,10 @@ export class AgentsService {
   }
 
   /**
-   * Get agent status (includes Retell AI sync)
+   * Get agent status
    */
   async getAgentStatus(tenantId: string, id: string) {
     const agent = await this.getAgent(tenantId, id);
-
-    // Get latest status from Retell AI
-    let retellStatus: any = null;
-    if (agent.retellAgentId) {
-      try {
-        retellStatus = await this.retellService.getAgent(agent.retellAgentId);
-      } catch (error) {
-        this.logger.warn(`Failed to get Retell status for agent ${id}`);
-      }
-    }
 
     // Get recent call statistics
     const last24Hours = new Date(Date.now() - 24 * 60 * 60 * 1000);
@@ -407,7 +464,7 @@ export class AgentsService {
 
     return {
       agent,
-      retellStatus,
+      elevenLabsAgentId: agent.elevenLabsAgentId,
       statistics: {
         recentCalls,
         activeCalls,
@@ -439,13 +496,10 @@ export class AgentsService {
       throw new BadRequestException('Cannot delete agent with assigned phone numbers. Unassign first.');
     }
 
-    // Delete from Retell AI
-    if (agent.retellAgentId) {
-      try {
-        await this.retellService.deleteAgent(agent.retellAgentId);
-      } catch (error) {
-        this.logger.warn(`Failed to delete Retell agent ${agent.retellAgentId}`);
-      }
+    // ElevenLabs agents are managed in their dashboard
+    // We just remove the local configuration
+    if (agent.elevenLabsAgentId) {
+      this.logger.log(`Removing ElevenLabs agent reference: ${agent.elevenLabsAgentId}`);
     }
 
     // Delete from database
@@ -462,7 +516,7 @@ export class AgentsService {
       entityId: id,
       metadata: {
         agentName: agent.agentName,
-        retellAgentId: agent.retellAgentId,
+        elevenLabsAgentId: agent.elevenLabsAgentId,
       },
     });
 
