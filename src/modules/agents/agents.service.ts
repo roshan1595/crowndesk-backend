@@ -305,16 +305,18 @@ export class AgentsService {
   async activateAgent(tenantId: string, userId: string, id: string) {
     const agent = await this.getAgent(tenantId, id);
 
-    // Check if agent has phone number assigned
-    const phoneNumberCount = await this.prisma.phoneNumber.count({
-      where: {
-        tenantId,
-        assignedAgentId: id,
-      },
-    });
+    // Check if VOICE agent has phone number assigned (only VOICE agents need phone numbers)
+    if (agent.agentCategory === AgentCategory.VOICE) {
+      const phoneNumberCount = await this.prisma.phoneNumber.count({
+        where: {
+          tenantId,
+          assignedAgentId: id,
+        },
+      });
 
-    if (phoneNumberCount === 0) {
-      throw new BadRequestException('Cannot activate agent without assigned phone number');
+      if (phoneNumberCount === 0) {
+        throw new BadRequestException('Voice agents require an assigned phone number to activate');
+      }
     }
 
     // Update status
