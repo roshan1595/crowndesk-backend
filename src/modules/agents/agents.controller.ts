@@ -17,15 +17,12 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ClerkAuthGuard } from '../../common/auth/guards/clerk-auth.guard';
+import { ClerkAuthGuard, AuthenticatedUser } from '../../common/auth/guards/clerk-auth.guard';
 import { AgentsService } from './agents.service';
 import { AgentType, AgentStatus, AgentCategory } from '@prisma/client';
 
 interface AuthRequest extends Request {
-  auth: {
-    userId: string;
-    orgId: string;
-  };
+  user: AuthenticatedUser;
 }
 
 @Controller('agents')
@@ -61,7 +58,7 @@ export class AgentsController {
       requireApproval?: boolean;
     },
   ) {
-    return this.agentsService.createAgent(req.auth.orgId, req.auth.userId, body);
+    return this.agentsService.createAgent(req.user.tenantId, req.user.userId, body);
   }
 
   /**
@@ -75,7 +72,7 @@ export class AgentsController {
     @Query('agentType') agentType?: AgentType,
     @Query('agentCategory') agentCategory?: AgentCategory,
   ) {
-    return this.agentsService.listAgents(req.auth.orgId, {
+    return this.agentsService.listAgents(req.user.tenantId, {
       status,
       agentType,
       agentCategory,
@@ -88,7 +85,7 @@ export class AgentsController {
    */
   @Get('stats')
   async getStatistics(@Request() req: AuthRequest) {
-    return this.agentsService.getStatistics(req.auth.orgId);
+    return this.agentsService.getStatistics(req.user.tenantId);
   }
 
   /**
@@ -97,7 +94,7 @@ export class AgentsController {
    */
   @Get(':id')
   async getAgent(@Request() req: AuthRequest, @Param('id') id: string) {
-    return this.agentsService.getAgent(req.auth.orgId, id);
+    return this.agentsService.getAgent(req.user.tenantId, id);
   }
 
   /**
@@ -106,7 +103,7 @@ export class AgentsController {
    */
   @Get(':id/status')
   async getAgentStatus(@Request() req: AuthRequest, @Param('id') id: string) {
-    return this.agentsService.getAgentStatus(req.auth.orgId, id);
+    return this.agentsService.getAgentStatus(req.user.tenantId, id);
   }
 
   /**
@@ -131,7 +128,7 @@ export class AgentsController {
       maxCallDuration?: number;
     },
   ) {
-    return this.agentsService.updateAgent(req.auth.orgId, req.auth.userId, id, body);
+    return this.agentsService.updateAgent(req.user.tenantId, req.user.userId, id, body);
   }
 
   /**
@@ -140,7 +137,7 @@ export class AgentsController {
    */
   @Post(':id/activate')
   async activateAgent(@Request() req: AuthRequest, @Param('id') id: string) {
-    return this.agentsService.activateAgent(req.auth.orgId, req.auth.userId, id);
+    return this.agentsService.activateAgent(req.user.tenantId, req.user.userId, id);
   }
 
   /**
@@ -149,7 +146,7 @@ export class AgentsController {
    */
   @Post(':id/deactivate')
   async deactivateAgent(@Request() req: AuthRequest, @Param('id') id: string) {
-    return this.agentsService.deactivateAgent(req.auth.orgId, req.auth.userId, id);
+    return this.agentsService.deactivateAgent(req.user.tenantId, req.user.userId, id);
   }
 
   /**
@@ -159,6 +156,6 @@ export class AgentsController {
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
   async deleteAgent(@Request() req: AuthRequest, @Param('id') id: string) {
-    return this.agentsService.deleteAgent(req.auth.orgId, req.auth.userId, id);
+    return this.agentsService.deleteAgent(req.user.tenantId, req.user.userId, id);
   }
 }

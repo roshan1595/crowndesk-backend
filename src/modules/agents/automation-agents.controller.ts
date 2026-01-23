@@ -15,15 +15,12 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ClerkAuthGuard } from '../../common/auth/guards/clerk-auth.guard';
+import { ClerkAuthGuard, AuthenticatedUser } from '../../common/auth/guards/clerk-auth.guard';
 import { AutomationAgentsService } from './automation-agents.service';
 import { AgentType, AutomationRunStatus } from '@prisma/client';
 
 interface AuthRequest extends Request {
-  auth: {
-    userId: string;
-    orgId: string;
-  };
+  user: AuthenticatedUser;
 }
 
 @Controller('automation-agents')
@@ -37,7 +34,7 @@ export class AutomationAgentsController {
    */
   @Get('stats')
   async getStatistics(@Request() req: AuthRequest) {
-    return this.automationService.getStatistics(req.auth.orgId);
+    return this.automationService.getStatistics(req.user.tenantId);
   }
 
   /**
@@ -54,7 +51,7 @@ export class AutomationAgentsController {
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
   ) {
-    return this.automationService.getAllRuns(req.auth.orgId, {
+    return this.automationService.getAllRuns(req.user.tenantId, {
       status,
       agentType,
       limit: limit ? parseInt(limit) : undefined,
@@ -73,7 +70,7 @@ export class AutomationAgentsController {
     @Request() req: AuthRequest,
     @Param('runId') runId: string,
   ) {
-    return this.automationService.getExecutionDetails(req.auth.orgId, runId);
+    return this.automationService.getExecutionDetails(req.user.tenantId, runId);
   }
 
   /**
@@ -87,8 +84,8 @@ export class AutomationAgentsController {
     @Param('runId') runId: string,
   ) {
     return this.automationService.cancelExecution(
-      req.auth.orgId,
-      req.auth.userId,
+      req.user.tenantId,
+      req.user.userId,
       runId,
     );
   }
@@ -105,8 +102,8 @@ export class AutomationAgentsController {
     @Body() body?: { metadata?: Record<string, any> },
   ) {
     return this.automationService.triggerExecution(
-      req.auth.orgId,
-      req.auth.userId,
+      req.user.tenantId,
+      req.user.userId,
       agentId,
       body,
     );
@@ -125,7 +122,7 @@ export class AutomationAgentsController {
     @Query('offset') offset?: string,
   ) {
     return this.automationService.getExecutionHistory(
-      req.auth.orgId,
+      req.user.tenantId,
       agentId,
       {
         status,
@@ -146,8 +143,8 @@ export class AutomationAgentsController {
     @Param('agentId') agentId: string,
   ) {
     return this.automationService.pauseSchedule(
-      req.auth.orgId,
-      req.auth.userId,
+      req.user.tenantId,
+      req.user.userId,
       agentId,
     );
   }
@@ -163,8 +160,8 @@ export class AutomationAgentsController {
     @Param('agentId') agentId: string,
   ) {
     return this.automationService.resumeSchedule(
-      req.auth.orgId,
-      req.auth.userId,
+      req.user.tenantId,
+      req.user.userId,
       agentId,
     );
   }
