@@ -13,7 +13,7 @@ export interface CallFilters {
   startDate?: Date;
   endDate?: Date;
   agentId?: string;
-  status?: CallStatus;
+  status?: CallStatus | CallStatus[]; // Can be single or array
   patientId?: string;
   phoneNumber?: string;
   intent?: string;
@@ -57,9 +57,17 @@ export class CallsService {
       where.agentConfigId = filters.agentId;
     }
 
-    // Status filter
+    // Status filter - handle both single value and array
     if (filters?.status) {
-      where.status = filters.status;
+      if (Array.isArray(filters.status)) {
+        // Multiple statuses - use 'in' operator
+        where.status = {
+          in: filters.status,
+        };
+      } else {
+        // Single status
+        where.status = filters.status;
+      }
     }
 
     // Patient filter

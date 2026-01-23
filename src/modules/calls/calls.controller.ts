@@ -42,13 +42,18 @@ export class CallsController {
     @Query('startDate') startDate?: string,
     @Query('endDate') endDate?: string,
     @Query('agentId') agentId?: string,
-    @Query('status') status?: CallStatus,
+    @Query('status') statusParam?: string, // Can be comma-separated like "in_progress,ringing"
     @Query('patientId') patientId?: string,
     @Query('phoneNumber') phoneNumber?: string,
     @Query('intent') intent?: string,
     @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit?: number,
     @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset?: number,
   ) {
+    // Parse comma-separated status values into array
+    const status = statusParam 
+      ? statusParam.split(',').map(s => s.trim()) as CallStatus[]
+      : undefined;
+
     return this.callsService.listCalls(req.user.tenantId, {
       startDate: startDate ? new Date(startDate) : undefined,
       endDate: endDate ? new Date(endDate) : undefined,
