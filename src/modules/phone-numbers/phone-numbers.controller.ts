@@ -16,15 +16,12 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import { ClerkAuthGuard } from '../../common/auth/guards/clerk-auth.guard';
+import { ClerkAuthGuard, AuthenticatedUser } from '../../common/auth/guards/clerk-auth.guard';
 import { PhoneNumbersService } from './phone-numbers.service';
 import { PhoneProvider, PhoneStatus } from '@prisma/client';
 
 interface AuthRequest extends Request {
-  auth: {
-    userId: string;
-    orgId: string;
-  };
+  user: AuthenticatedUser;
 }
 
 @Controller('phone-numbers')
@@ -47,7 +44,7 @@ export class PhoneNumbersController {
       limit?: number;
     },
   ) {
-    return this.phoneNumbersService.searchAvailableNumbers(req.auth.orgId, body);
+    return this.phoneNumbersService.searchAvailableNumbers(req.user.tenantId, body);
   }
 
   /**
@@ -66,7 +63,7 @@ export class PhoneNumbersController {
       smsEnabled?: boolean;
     },
   ) {
-    return this.phoneNumbersService.purchasePhoneNumber(req.auth.orgId, req.auth.userId, body);
+    return this.phoneNumbersService.purchasePhoneNumber(req.user.tenantId, req.user.userId, body);
   }
 
   /**
@@ -80,7 +77,7 @@ export class PhoneNumbersController {
     @Query('provider') provider?: PhoneProvider,
     @Query('assignedAgentId') assignedAgentId?: string,
   ) {
-    return this.phoneNumbersService.listPhoneNumbers(req.auth.orgId, {
+    return this.phoneNumbersService.listPhoneNumbers(req.user.tenantId, {
       status,
       provider,
       assignedAgentId,
@@ -93,7 +90,7 @@ export class PhoneNumbersController {
    */
   @Get('stats')
   async getStatistics(@Request() req: AuthRequest) {
-    return this.phoneNumbersService.getStatistics(req.auth.orgId);
+    return this.phoneNumbersService.getStatistics(req.user.tenantId);
   }
 
   /**
@@ -102,7 +99,7 @@ export class PhoneNumbersController {
    */
   @Get(':id')
   async getPhoneNumber(@Request() req: AuthRequest, @Param('id') id: string) {
-    return this.phoneNumbersService.getPhoneNumber(req.auth.orgId, id);
+    return this.phoneNumbersService.getPhoneNumber(req.user.tenantId, id);
   }
 
   /**
@@ -121,7 +118,7 @@ export class PhoneNumbersController {
       forwardingNumber?: string;
     },
   ) {
-    return this.phoneNumbersService.configurePhoneNumber(req.auth.orgId, req.auth.userId, id, body);
+    return this.phoneNumbersService.configurePhoneNumber(req.user.tenantId, req.user.userId, id, body);
   }
 
   /**
@@ -140,7 +137,7 @@ export class PhoneNumbersController {
       friendlyName?: string;
     },
   ) {
-    return this.phoneNumbersService.portPhoneNumber(req.auth.orgId, req.auth.userId, body);
+    return this.phoneNumbersService.portPhoneNumber(req.user.tenantId, req.user.userId, body);
   }
 
   /**
@@ -150,6 +147,6 @@ export class PhoneNumbersController {
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
   async releasePhoneNumber(@Request() req: AuthRequest, @Param('id') id: string) {
-    return this.phoneNumbersService.releasePhoneNumber(req.auth.orgId, req.auth.userId, id);
+    return this.phoneNumbersService.releasePhoneNumber(req.user.tenantId, req.user.userId, id);
   }
 }

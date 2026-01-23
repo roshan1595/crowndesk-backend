@@ -15,16 +15,13 @@ import {
   ParseIntPipe,
   DefaultValuePipe,
 } from '@nestjs/common';
-import { ClerkAuthGuard } from '../../common/auth/guards/clerk-auth.guard';
+import { ClerkAuthGuard, AuthenticatedUser } from '../../common/auth/guards/clerk-auth.guard';
 import { CallsService } from './calls.service';
 import { CallAnalyticsService } from './call-analytics.service';
 import { CallStatus } from '@prisma/client';
 
 interface AuthRequest extends Request {
-  auth: {
-    userId: string;
-    orgId: string;
-  };
+  user: AuthenticatedUser;
 }
 
 @Controller('calls')
@@ -52,7 +49,7 @@ export class CallsController {
     @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit?: number,
     @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset?: number,
   ) {
-    return this.callsService.listCalls(req.auth.orgId, {
+    return this.callsService.listCalls(req.user.tenantId, {
       startDate: startDate ? new Date(startDate) : undefined,
       endDate: endDate ? new Date(endDate) : undefined,
       agentId,
@@ -71,7 +68,7 @@ export class CallsController {
    */
   @Get(':id')
   async getCallDetail(@Request() req: AuthRequest, @Param('id') id: string) {
-    return this.callsService.getCallDetail(req.auth.orgId, id);
+    return this.callsService.getCallDetail(req.user.tenantId, id);
   }
 
   /**
@@ -85,8 +82,8 @@ export class CallsController {
     @Body() body: { approvalId: string },
   ) {
     return this.callsService.approveAction(
-      req.auth.orgId,
-      req.auth.userId,
+      req.user.tenantId,
+      req.user.userId,
       id,
       body.approvalId,
     );
@@ -103,8 +100,8 @@ export class CallsController {
     @Body() body: { approvalId: string; reason: string },
   ) {
     return this.callsService.rejectAction(
-      req.auth.orgId,
-      req.auth.userId,
+      req.user.tenantId,
+      req.user.userId,
       id,
       body.approvalId,
       body.reason,
@@ -122,7 +119,7 @@ export class CallsController {
     @Query('endDate') endDate?: string,
   ) {
     return this.analyticsService.getOverview(
-      req.auth.orgId,
+      req.user.tenantId,
       startDate ? new Date(startDate) : undefined,
       endDate ? new Date(endDate) : undefined,
     );
@@ -140,7 +137,7 @@ export class CallsController {
     @Query('endDate') endDate?: string,
   ) {
     return this.analyticsService.getTrends(
-      req.auth.orgId,
+      req.user.tenantId,
       granularity,
       startDate ? new Date(startDate) : undefined,
       endDate ? new Date(endDate) : undefined,
@@ -158,7 +155,7 @@ export class CallsController {
     @Query('endDate') endDate?: string,
   ) {
     return this.analyticsService.getIntentDistribution(
-      req.auth.orgId,
+      req.user.tenantId,
       startDate ? new Date(startDate) : undefined,
       endDate ? new Date(endDate) : undefined,
     );
@@ -175,7 +172,7 @@ export class CallsController {
     @Query('endDate') endDate?: string,
   ) {
     return this.analyticsService.getAgentPerformance(
-      req.auth.orgId,
+      req.user.tenantId,
       startDate ? new Date(startDate) : undefined,
       endDate ? new Date(endDate) : undefined,
     );
