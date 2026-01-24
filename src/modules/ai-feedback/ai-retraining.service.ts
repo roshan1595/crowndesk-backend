@@ -19,7 +19,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { HttpService } from '@nestjs/axios';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
-import { PrismaService } from '@/common/prisma/prisma.service';
+import { PrismaService } from '../../common/prisma/prisma.service';
 import { AIFeedbackService } from '../ai-feedback/ai-feedback.service';
 
 export interface RetrainingResult {

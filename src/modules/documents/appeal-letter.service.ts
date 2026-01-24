@@ -11,7 +11,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import PDFDocument from 'pdfkit';
 import { Readable } from 'stream';
-import { PrismaService } from '@/common/prisma/prisma.service';
+import { PrismaService } from '../../common/prisma/prisma.service';
 import { S3StorageService } from './s3-storage.service';
 import { ConfigService } from '@nestjs/config';
 
