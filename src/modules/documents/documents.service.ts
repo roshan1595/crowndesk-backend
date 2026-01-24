@@ -33,12 +33,39 @@ export class DocumentsService {
     private readonly s3Storage: S3StorageService,
   ) {}
 
-  async findByTenant(tenantId: string, options?: { patientId?: string }) {
+  async findByTenant(tenantId: string, options?: { 
+    patientId?: string;
+    type?: string;
+    status?: string;
+    createdByType?: string;
+    aiGenerated?: boolean;
+    dateFrom?: string;
+    dateTo?: string;
+  }) {
     return this.prisma.withTenantContext(tenantId, async (tx) => {
       return tx.document.findMany({
         where: {
           tenantId,
           ...(options?.patientId ? { patientId: options.patientId } : {}),
+          ...(options?.type ? { type: options.type as any } : {}),
+          ...(options?.status ? { status: options.status as any } : {}),
+          ...(options?.createdByType ? { createdByType: options.createdByType } : {}),
+          ...(options?.aiGenerated !== undefined ? { aiGenerated: options.aiGenerated } : {}),
+          ...(options?.dateFrom || options?.dateTo ? {
+            createdAt: {
+              ...(options?.dateFrom ? { gte: new Date(options.dateFrom) } : {}),
+              ...(options?.dateTo ? { lte: new Date(options.dateTo) } : {}),
+            },
+          } : {}),
+        },
+        include: {
+          patient: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
       });
@@ -49,6 +76,22 @@ export class DocumentsService {
     return this.prisma.withTenantContext(tenantId, async (tx) => {
       return tx.document.findFirst({
         where: { id, tenantId },
+        include: {
+          patient: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+          preAuth: {
+            select: {
+              id: true,
+              payerReferenceNumber: true,
+              status: true,
+            },
+          },
+        },
       });
     });
   }
@@ -241,6 +284,196 @@ export class DocumentsService {
     });
 
     return { success: true, documentId };
+  }
+
+  /**
+   * Approve a document
+   * Updates status to 'approved' and tracks approval metadata
+   */
+  async approveDocument(tenantId: string, documentId: string, userId: string, notes?: string) {
+    const document = await this.findById(tenantId, documentId);
+    
+    if (!document) {
+      throw new NotFoundException('Document not found');
+    }
+
+    if (document.status === 'approved') {
+      throw new BadRequestException('Document is already approved');
+    }
+
+    return this.prisma.withTenantContext(tenantId, async (tx) => {
+      return tx.document.update({
+        where: { id: documentId },
+        data: {
+          status: 'approved',
+          metadata: {
+            ...(typeof document.metadata === 'object' && document.metadata ? document.metadata : {}),
+            approvedBy: userId,
+            approvedAt: new Date().toISOString(),
+            ...(notes ? { approvalNotes: notes } : {}),
+          },
+        },
+        include: {
+          patient: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+      });
+    });
+  }
+
+  /**
+   * Reject a document
+   * Updates status to 'rejected' and stores rejection reason
+   */
+  async rejectDocument(tenantId: string, documentId: string, userId: string, reason: string) {
+    const document = await this.findById(tenantId, documentId);
+    
+    if (!document) {
+      throw new NotFoundException('Document not found');
+    }
+
+    if (document.status === 'approved') {
+      throw new BadRequestException('Cannot reject an approved document');
+    }
+
+    if (!reason || reason.trim().length === 0) {
+      throw new BadRequestException('Rejection reason is required');
+    }
+
+    return this.prisma.withTenantContext(tenantId, async (tx) => {
+      return tx.document.update({
+        where: { id: documentId },
+        data: {
+          status: 'rejected',
+          metadata: {
+            ...(typeof document.metadata === 'object' && document.metadata ? document.metadata : {}),
+            rejectedBy: userId,
+            rejectedAt: new Date().toISOString(),
+            rejectionReason: reason,
+          },
+        },
+        include: {
+          patient: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+            },
+          },
+        },
+      });
+    });
+  }
+
+  /**
+   * Get version history for a document
+   * Returns all previous versions of a document
+   */
+  async getVersionHistory(tenantId: string, documentId: string) {
+    const document = await this.findById(tenantId, documentId);
+    
+    if (!document) {
+      throw new NotFoundException('Document not found');
+    }
+
+    const versions: any[] = [document];
+    let currentDoc = document;
+
+    // Walk backward through version chain
+    while (currentDoc.previousVersionId) {
+      const previousVersion = await this.prisma.document.findFirst({
+        where: {
+          id: currentDoc.previousVersionId,
+          tenantId,
+        },
+        include: {
+          patient: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+            },
+          },          preAuth: {
+            select: {
+              id: true,
+              payerReferenceNumber: true,
+              status: true,
+            },
+          },        },
+      });
+
+      if (previousVersion) {
+        versions.push(previousVersion);
+        currentDoc = previousVersion;
+      } else {
+        break; // Version chain broken
+      }
+    }
+
+    return {
+      documentId,
+      currentVersion: document.version,
+      totalVersions: versions.length,
+      versions,
+    };
+  }
+
+  /**
+   * Get document type summary with counts for tenant
+   */
+  async getDocumentTypeSummary(tenantId: string) {
+    const documents = await this.prisma.document.groupBy({
+      by: ['type', 'status'],
+      where: { tenantId },
+      _count: { id: true },
+    });
+
+    // Organize by type
+    const typeMap = new Map<string, { total: number; byStatus: Record<string, number> }>();
+    
+    for (const doc of documents) {
+      const existing = typeMap.get(doc.type) || { total: 0, byStatus: {} };
+      existing.total += doc._count.id;
+      existing.byStatus[doc.status] = (existing.byStatus[doc.status] || 0) + doc._count.id;
+      typeMap.set(doc.type, existing);
+    }
+
+    // Get AI-generated counts
+    const aiGenerated = await this.prisma.document.count({
+      where: { tenantId, aiGenerated: true },
+    });
+
+    const total = await this.prisma.document.count({
+      where: { tenantId },
+    });
+
+    // Get recent activity
+    const recentDocs = await this.prisma.document.findMany({
+      where: { tenantId },
+      orderBy: { createdAt: 'desc' },
+      take: 5,
+      select: {
+        id: true,
+        type: true,
+        fileName: true,
+        status: true,
+        createdAt: true,
+        aiGenerated: true,
+      },
+    });
+
+    return {
+      total,
+      aiGenerated,
+      manuallyCreated: total - aiGenerated,
+      byType: Object.fromEntries(typeMap),
+      recentActivity: recentDocs,
+    };
   }
 
   /**

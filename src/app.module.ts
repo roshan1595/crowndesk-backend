@@ -58,6 +58,9 @@ import { RegistrationModule } from './modules/registration/registration.module';
 import { TwilioVoiceModule } from './modules/twilio/twilio-voice.module';
 import { AiAgentModule } from './modules/ai-agent/ai-agent.module';
 import { ServiceAuthGuard } from './common/auth/guards/service-auth.guard';
+import { PreAuthorizationsModule } from './modules/pre-authorizations/pre-authorizations.module';
+import { PaymentPostingModule } from './modules/payment-posting/payment-posting.module';
+import { AIFeedbackModule } from './modules/ai-feedback/ai-feedback.module';
 
 @Module({
   imports: [
@@ -114,6 +117,9 @@ import { ServiceAuthGuard } from './common/auth/guards/service-auth.guard';
     RegistrationModule,
     TwilioVoiceModule,
     AiAgentModule,
+    PreAuthorizationsModule,
+    PaymentPostingModule,
+    AIFeedbackModule,
   ],
   providers: [
     // Global authentication guard

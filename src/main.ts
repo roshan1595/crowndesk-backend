@@ -77,14 +77,21 @@ async function bootstrap() {
       },
       'clerk-jwt',
     )
+    .addTag('health', 'Health check endpoints')
     .addTag('tenants', 'Tenant management')
     .addTag('users', 'User management')
     .addTag('patients', 'Patient management')
     .addTag('appointments', 'Appointment management')
     .addTag('insurance', 'Insurance and eligibility')
+    .addTag('claims', 'Insurance claim management - create, submit, track, appeal')
+    .addTag('pre-authorizations', 'Pre-authorization requests and tracking')
+    .addTag('ai', 'AI-powered features - code suggestions, insights, intent classification')
+    .addTag('ai-feedback', 'AI feedback and retraining system')
+    .addTag('payment-posting', 'ERA processing and payment posting')
+    .addTag('billing', 'Patient statements and billing')
     .addTag('approvals', 'Approval workflow')
     .addTag('sync', 'PMS synchronization')
-    .addTag('billing', 'Stripe billing')
+    .addTag('agents', 'AI agent configuration and management')
     .addTag('audit', 'Audit logging')
     .build();
 

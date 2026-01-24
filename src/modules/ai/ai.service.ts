@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { AiInsightStatus } from '@prisma/client';
+import { randomUUID } from 'crypto';
 
 // AI Insight interface - exported for use in controller
 export interface AIInsight {
@@ -21,6 +22,22 @@ export interface AIInsight {
   entityType: string;
   entityId: string;
   createdAt: string;
+}
+
+/**
+ * AI Response wrapper with tracking metadata
+ * Based on 2025 AI API best practices:
+ * - Unique prediction identifier (UUID) for feedback reference
+ * - Context IDs from RAG queries for retraining
+ * - Confidence scores and timestamps
+ */
+export interface AIResponseMetadata {
+  suggestionId: string;      // Unique ID for feedback tracking
+  contextIds: string[];      // RAG chunk IDs used in generation
+  confidence: number;        // Overall confidence score (0-1)
+  modelVersion?: string;     // AI model version used
+  createdAt: string;         // ISO timestamp
+  requiresReview?: boolean;  // If confidence below threshold
 }
 
 @Injectable()
@@ -116,6 +133,9 @@ export class AiService {
   }
 
   async classifyIntent(tenantId: string, message: string, context?: any) {
+    const suggestionId = randomUUID();
+    const createdAt = new Date().toISOString();
+    
     try {
       const response = await firstValueFrom(
         this.httpService.post(`${this.aiServiceUrl}/intent/classify`, {
@@ -124,7 +144,20 @@ export class AiService {
           context,
         }),
       );
-      return response.data;
+      
+      // Extract contextIds from AI service response if available
+      const contextIds = response.data?.contextIds || response.data?.context_ids || [];
+      const confidence = response.data?.confidence || 0.8;
+      
+      return {
+        ...response.data,
+        // Tracking metadata for feedback
+        suggestionId,
+        contextIds,
+        confidence,
+        createdAt,
+        requiresReview: confidence < 0.7,
+      };
     } catch (error: any) {
       this.logger.error(`Failed to classify intent: ${error.message}`);
       throw error;
@@ -132,6 +165,9 @@ export class AiService {
   }
 
   async generateSummary(tenantId: string, text: string, type?: string) {
+    const suggestionId = randomUUID();
+    const createdAt = new Date().toISOString();
+    
     try {
       const response = await firstValueFrom(
         this.httpService.post(`${this.aiServiceUrl}/rag/summarize`, {
@@ -140,7 +176,20 @@ export class AiService {
           document_type: type || 'clinical_notes',
         }),
       );
-      return response.data;
+      
+      // Extract contextIds from AI service response if available
+      const contextIds = response.data?.contextIds || response.data?.context_ids || [];
+      const confidence = response.data?.confidence || 0.85;
+      
+      return {
+        ...response.data,
+        // Tracking metadata for feedback
+        suggestionId,
+        contextIds,
+        confidence,
+        createdAt,
+        requiresReview: confidence < 0.7,
+      };
     } catch (error: any) {
       this.logger.error(`Failed to generate summary: ${error.message}`);
       throw error;
@@ -153,6 +202,9 @@ export class AiService {
     patientId?: string,
     appointmentId?: string,
   ) {
+    const suggestionId = randomUUID();
+    const createdAt = new Date().toISOString();
+    
     try {
       const response = await firstValueFrom(
         this.httpService.post(`${this.aiServiceUrl}/coding/suggest`, {
@@ -162,7 +214,25 @@ export class AiService {
           appointment_id: appointmentId,
         }),
       );
-      return response.data;
+      
+      // Extract contextIds from AI service response if available
+      const contextIds = response.data?.contextIds || response.data?.context_ids || [];
+      
+      // Calculate overall confidence from suggestions
+      const suggestions = response.data?.suggestions || [];
+      const avgConfidence = suggestions.length > 0 
+        ? suggestions.reduce((sum: number, s: any) => sum + (s.confidence || 0), 0) / suggestions.length 
+        : 0.75;
+      
+      return {
+        ...response.data,
+        // Tracking metadata for feedback
+        suggestionId,
+        contextIds,
+        confidence: avgConfidence,
+        createdAt,
+        requiresReview: avgConfidence < 0.7,
+      };
     } catch (error: any) {
       this.logger.error(`Failed to suggest codes: ${error.message}`);
       throw error;
@@ -170,6 +240,9 @@ export class AiService {
   }
 
   async validateCode(tenantId: string, code: string, clinicalNotes: string) {
+    const suggestionId = randomUUID();
+    const createdAt = new Date().toISOString();
+    
     try {
       const response = await firstValueFrom(
         this.httpService.post(`${this.aiServiceUrl}/coding/validate`, {
@@ -178,7 +251,20 @@ export class AiService {
           clinical_notes: clinicalNotes,
         }),
       );
-      return response.data;
+      
+      // Extract contextIds from AI service response if available
+      const contextIds = response.data?.contextIds || response.data?.context_ids || [];
+      const confidence = response.data?.confidence || response.data?.validity_score || 0.8;
+      
+      return {
+        ...response.data,
+        // Tracking metadata for feedback
+        suggestionId,
+        contextIds,
+        confidence,
+        createdAt,
+        requiresReview: confidence < 0.7,
+      };
     } catch (error: any) {
       this.logger.error(`Failed to validate code: ${error.message}`);
       throw error;

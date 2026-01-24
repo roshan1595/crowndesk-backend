@@ -9,11 +9,18 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { InvoiceStatus, PaymentMethod } from '@prisma/client';
 
+// Creator type for audit tracking
+export type InvoiceCreatorType = 'user' | 'automation' | 'system';
+
 export interface CreateInvoiceDto {
   patientId: string;
   dueDate?: Date;
   lineItems: CreateLineItemDto[];
   treatmentPlanId?: string;
+  notes?: string;
+  // Creator tracking (optional - defaults to 'user')
+  createdByType?: InvoiceCreatorType;
+  createdByAutomationRunId?: string;
 }
 
 export interface CreateLineItemDto {
@@ -22,6 +29,7 @@ export interface CreateLineItemDto {
   quantity: number;
   unitPrice: number;
   discountAmount?: number;
+  claimId?: string; // Link to claim if applicable
 }
 
 export interface UpdateInvoiceDto {
@@ -173,6 +181,9 @@ export class InvoicesService {
 
     const totalAmount = subtotal - discountAmount;
 
+    // Determine creator type
+    const createdByType = dto.createdByType || 'user';
+
     const invoice = await this.prisma.invoice.create({
       data: {
         tenantId,
@@ -190,6 +201,11 @@ export class InvoicesService {
         amountDue: totalAmount,
         status: 'draft',
         treatmentPlanId: dto.treatmentPlanId,
+        notes: dto.notes,
+        // Creator tracking
+        createdByType,
+        createdByUserId: createdByType === 'user' ? userId : null,
+        createdByAutomationRunId: dto.createdByAutomationRunId,
         lineItems: {
           create: dto.lineItems.map((item) => ({
             description: item.description,
@@ -197,6 +213,7 @@ export class InvoicesService {
             quantity: item.quantity,
             unitPrice: item.unitPrice,
             amount: item.quantity * item.unitPrice - (item.discountAmount || 0),
+            claimId: item.claimId,
           })),
         },
       },
@@ -208,7 +225,7 @@ export class InvoicesService {
 
     // Audit log
     await this.audit.log(tenantId, {
-      actorType: 'user',
+      actorType: createdByType === 'user' ? 'user' : 'system',
       actorId: userId,
       action: 'invoice.created',
       entityType: 'invoice',

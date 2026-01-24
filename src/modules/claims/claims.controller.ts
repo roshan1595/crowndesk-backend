@@ -2,11 +2,24 @@
  * CrownDesk V2 - Claims Controller
  * Per V2_COMPREHENSIVE_FEATURE_SPEC.md Section 3.4
  * REST API endpoints for dental claim management
+ * 
+ * Enhanced with:
+ * - Clinical narrative endpoints (POST /claims/:id/narratives)
+ * - Attachment management (POST/GET/DELETE /claims/:id/attachments)
+ * - Pre-authorization linking (POST /claims/:id/link-preauth)
  */
 
-import { Controller, Get, Post, Put, Delete, Param, Body, Query, Patch } from '@nestjs/common';
-import { ApiTags, ApiBearerAuth, ApiOperation, ApiQuery } from '@nestjs/swagger';
-import { ClaimsService, CreateClaimDto, UpdateClaimDto } from './claims.service';
+import { 
+  Controller, Get, Post, Put, Delete, Param, Body, Query, Patch,
+  UseInterceptors, UploadedFile, BadRequestException
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { 
+  ApiTags, ApiBearerAuth, ApiOperation, ApiQuery, ApiConsumes, ApiBody 
+} from '@nestjs/swagger';
+import { 
+  ClaimsService, CreateClaimDto, UpdateClaimDto, AddNarrativeDto, CreateClaimAttachmentDto 
+} from './claims.service';
 import { CurrentUser } from '../../common/auth/decorators/current-user.decorator';
 import { AuthenticatedUser } from '../../common/auth/guards/clerk-auth.guard';
 import { ClaimStatus } from '@prisma/client';
@@ -114,5 +127,181 @@ export class ClaimsController {
     @Body() body: { reason?: string },
   ) {
     return this.claimsService.fileAppeal(user.tenantId, user.userId, id, body.reason);
+  }
+
+  // ===========================================
+  // NARRATIVE ENDPOINTS
+  // Per COMPREHENSIVE_INSURANCE_BILLING_WORKFLOW_PLAN.md Section 8.1
+  // POST /api/claims/:id/narratives
+  // ===========================================
+
+  @Post(':id/narratives')
+  @ApiOperation({ 
+    summary: 'Add clinical narrative to a claim',
+    description: 'Adds medical necessity narrative for claim procedures. Supports both manual entry and AI-generated narratives. Per EDI 837D, narratives should include tooth numbers, diagnosis, and treatment justification.'
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        narrative: { 
+          type: 'string', 
+          description: 'Clinical narrative text for medical necessity documentation',
+          example: 'Tooth #3 has been destroyed by extensive caries extending below the gumline and requires crown restoration. The existing composite filling is fractured with recurrent decay undermining the remaining tooth structure.'
+        },
+        procedureIds: { 
+          type: 'array', 
+          items: { type: 'string' },
+          description: 'Optional: Specific procedure IDs this narrative covers. If omitted, covers all procedures.'
+        },
+        source: { 
+          type: 'string', 
+          enum: ['manual', 'ai'],
+          description: 'Source of narrative: manual (user-written) or ai (AI-generated)'
+        },
+      },
+      required: ['narrative', 'source'],
+    },
+  })
+  async addNarrative(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() dto: AddNarrativeDto,
+  ) {
+    return this.claimsService.addNarrative(user.tenantId, user.userId, id, dto);
+  }
+
+  @Get(':id/narratives')
+  @ApiOperation({ summary: 'Get narrative for a claim' })
+  async getNarrative(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    return this.claimsService.getNarrative(user.tenantId, id);
+  }
+
+  // ===========================================
+  // ATTACHMENT ENDPOINTS
+  // Per EDI 837D PWK segment requirements
+  // POST/GET/DELETE /api/claims/:id/attachments
+  // ===========================================
+
+  @Post(':id/attachments')
+  @ApiOperation({ 
+    summary: 'Upload attachment to a claim',
+    description: 'Upload supporting documentation (X-rays, perio charts, photos) for claim submission. Per EDI 837D PWK segment, attachments can be transmitted electronically or flagged for mail/fax.'
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          format: 'binary',
+        },
+        type: {
+          type: 'string',
+          enum: ['xray', 'perio_chart', 'clinical_photo', 'narrative', 'eob', 'denial_letter', 'appeal_letter', 'insurance_card', 'other'],
+          description: 'Type of attachment',
+        },
+        description: {
+          type: 'string',
+          description: 'Optional description of the attachment',
+        },
+        transmissionCode: {
+          type: 'string',
+          enum: ['AA', 'BM', 'EL', 'EM', 'FX'],
+          description: 'EDI transmission code: AA=Available on Request, BM=By Mail, EL=Electronic, EM=Email, FX=Fax',
+        },
+      },
+      required: ['file', 'type'],
+    },
+  })
+  @UseInterceptors(FileInterceptor('file'))
+  async uploadAttachment(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @UploadedFile() file: any,  // Multer.File type from @types/multer
+    @Body() dto: CreateClaimAttachmentDto,
+  ) {
+    if (!file) {
+      throw new BadRequestException('File is required');
+    }
+
+    return this.claimsService.uploadAttachment(
+      user.tenantId, 
+      user.userId, 
+      id, 
+      {
+        originalname: file.originalname,
+        mimetype: file.mimetype,
+        size: file.size,
+        buffer: file.buffer,
+      },
+      dto,
+    );
+  }
+
+  @Get(':id/attachments')
+  @ApiOperation({ summary: 'List attachments for a claim' })
+  async listAttachments(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    return this.claimsService.listAttachments(user.tenantId, id);
+  }
+
+  @Delete(':id/attachments/:attachmentId')
+  @ApiOperation({ 
+    summary: 'Delete an attachment from a claim',
+    description: 'Only allowed if claim is in draft status'
+  })
+  async deleteAttachment(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Param('attachmentId') attachmentId: string,
+  ) {
+    return this.claimsService.deleteAttachment(user.tenantId, user.userId, id, attachmentId);
+  }
+
+  // ===========================================
+  // PRE-AUTHORIZATION LINKING ENDPOINTS
+  // Per COMPREHENSIVE_INSURANCE_BILLING_WORKFLOW_PLAN.md
+  // POST /api/claims/:id/link-preauth
+  // ===========================================
+
+  @Post(':id/link-preauth')
+  @ApiOperation({ 
+    summary: 'Link a claim to a pre-authorization',
+    description: 'Associates the claim with an approved pre-authorization for tracking and submission. The PA must belong to the same patient.'
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        preAuthId: { 
+          type: 'string', 
+          description: 'ID of the pre-authorization to link' 
+        },
+      },
+      required: ['preAuthId'],
+    },
+  })
+  async linkToPreAuth(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body() body: { preAuthId: string },
+  ) {
+    return this.claimsService.linkToPreAuth(user.tenantId, user.userId, id, body.preAuthId);
+  }
+
+  @Delete(':id/link-preauth')
+  @ApiOperation({ summary: 'Unlink a claim from its pre-authorization' })
+  async unlinkFromPreAuth(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    return this.claimsService.unlinkFromPreAuth(user.tenantId, user.userId, id);
   }
 }

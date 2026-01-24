@@ -47,6 +47,26 @@ export interface ClaimSearchOptions {
   dateTo?: Date;
 }
 
+/**
+ * DTO for adding clinical narrative to a claim
+ * Per COMPREHENSIVE_INSURANCE_BILLING_WORKFLOW_PLAN.md Section 8.1
+ */
+export interface AddNarrativeDto {
+  narrative: string;
+  procedureIds?: string[];  // Which claim procedures this narrative covers
+  source: 'manual' | 'ai';
+}
+
+/**
+ * DTO for creating claim attachments
+ * Per EDI 837D PWK segment requirements
+ */
+export interface CreateClaimAttachmentDto {
+  type: 'xray' | 'perio_chart' | 'clinical_photo' | 'narrative' | 'eob' | 'denial_letter' | 'appeal_letter' | 'insurance_card' | 'other';
+  description?: string;
+  transmissionCode?: 'AA' | 'BM' | 'EL' | 'EM' | 'FX';  // EDI transmission codes: AA=Available on Request, BM=By Mail, EL=Electronic Only, EM=Email, FX=Fax
+}
+
 @Injectable()
 export class ClaimsService {
   private readonly logger = new Logger(ClaimsService.name);
@@ -761,6 +781,401 @@ export class ClaimsService {
       thirtyDay: { amount: thirtyDay._sum.totalCharge || 0, count: thirtyDay._count },
       sixtyDay: { amount: sixtyDay._sum.totalCharge || 0, count: sixtyDay._count },
       ninetyPlus: { amount: ninetyPlus._sum.totalCharge || 0, count: ninetyPlus._count },
+    };
+  }
+
+  // ===========================================
+  // NARRATIVE MANAGEMENT
+  // Per COMPREHENSIVE_INSURANCE_BILLING_WORKFLOW_PLAN.md Section 8.1
+  // ===========================================
+
+  /**
+   * Add clinical narrative to a claim
+   * Used for medical necessity documentation per EDI 837D requirements
+   * 
+   * Research findings (Jan 2025):
+   * - Narratives should include tooth numbers, reason for procedure, medical necessity
+   * - Example: "Tooth #3 has been destroyed by caries/fracture and requires crown restoration"
+   * - PWK segment in 837D Loop 2300 references narrative attachments
+   */
+  async addNarrative(tenantId: string, userId: string, claimId: string, dto: AddNarrativeDto) {
+    const claim = await this.prisma.claim.findFirst({
+      where: { id: claimId, tenantId },
+      include: { procedures: true },
+    });
+
+    if (!claim) {
+      throw new NotFoundException(`Claim with ID ${claimId} not found`);
+    }
+
+    // Validate procedure IDs if provided
+    if (dto.procedureIds && dto.procedureIds.length > 0) {
+      const claimProcedureIds = claim.procedures.map(p => p.id);
+      const invalidIds = dto.procedureIds.filter(id => !claimProcedureIds.includes(id));
+      if (invalidIds.length > 0) {
+        throw new BadRequestException(`Invalid procedure IDs: ${invalidIds.join(', ')}`);
+      }
+    }
+
+    // Determine procedure IDs - if not specified, narrative covers all procedures
+    const narrativeProcedureIds = dto.procedureIds && dto.procedureIds.length > 0 
+      ? dto.procedureIds 
+      : claim.procedures.map(p => p.id);
+
+    const updatedClaim = await this.prisma.claim.update({
+      where: { id: claimId },
+      data: {
+        narrative: dto.narrative,
+        narrativeSource: dto.source,
+        narrativeProcedureIds: narrativeProcedureIds,
+      },
+      include: {
+        patient: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+        procedures: true,
+      },
+    });
+
+    // Audit log
+    await this.audit.log(tenantId, {
+      actorType: 'user',
+      actorId: userId,
+      action: 'claim.narrative_added',
+      entityType: 'claim',
+      entityId: claimId,
+      metadata: {
+        claimNumber: claim.claimNumber,
+        source: dto.source,
+        procedureIds: narrativeProcedureIds,
+        narrativeLength: dto.narrative.length,
+      },
+    });
+
+    this.logger.log(`Added ${dto.source} narrative to claim ${claim.claimNumber} covering ${narrativeProcedureIds.length} procedures`);
+
+    return {
+      ...updatedClaim,
+      message: 'Narrative added successfully',
+    };
+  }
+
+  /**
+   * Get narrative for a claim
+   */
+  async getNarrative(tenantId: string, claimId: string) {
+    const claim = await this.prisma.claim.findFirst({
+      where: { id: claimId, tenantId },
+      select: {
+        id: true,
+        claimNumber: true,
+        narrative: true,
+        narrativeSource: true,
+        narrativeProcedureIds: true,
+        procedures: true,
+      },
+    });
+
+    if (!claim) {
+      throw new NotFoundException(`Claim with ID ${claimId} not found`);
+    }
+
+    return {
+      claimId: claim.id,
+      claimNumber: claim.claimNumber,
+      narrative: claim.narrative,
+      source: claim.narrativeSource,
+      procedureIds: claim.narrativeProcedureIds,
+      procedures: claim.procedures.filter(p => 
+        (claim.narrativeProcedureIds || []).includes(p.id)
+      ),
+    };
+  }
+
+  // ===========================================
+  // ATTACHMENT MANAGEMENT  
+  // Per EDI 837D PWK segment requirements
+  // ===========================================
+
+  /**
+   * Upload attachment to a claim
+   * Used for X-rays, perio charts, clinical photos, etc.
+   * 
+   * Research findings (Jan 2025):
+   * - PWK segment in 837D Loop 2300 is required when attachments support a claim
+   * - Transmission codes: AA=Available on Request, BM=By Mail, EL=Electronic, EM=Email, FX=Fax
+   * - Files should be stored with organized key structure for retrieval
+   */
+  async uploadAttachment(
+    tenantId: string, 
+    userId: string, 
+    claimId: string, 
+    file: { originalname: string; mimetype: string; size: number; buffer?: Buffer },
+    dto: CreateClaimAttachmentDto,
+  ) {
+    const claim = await this.prisma.claim.findFirst({
+      where: { id: claimId, tenantId },
+    });
+
+    if (!claim) {
+      throw new NotFoundException(`Claim with ID ${claimId} not found`);
+    }
+
+    // Generate organized S3 key
+    // Structure: tenants/{tenantId}/claims/{claimId}/attachments/{timestamp}-{filename}
+    const storageKey = `tenants/${tenantId}/claims/${claimId}/attachments/${Date.now()}-${file.originalname}`;
+
+    // TODO: Implement actual S3 upload in Phase 2 (for now storing metadata only)
+    // When implemented:
+    // await this.s3Service.upload(storageKey, file.buffer, file.mimetype);
+
+    const attachment = await this.prisma.attachment.create({
+      data: {
+        tenantId,
+        claimId,
+        type: dto.type as any,
+        description: dto.description,
+        fileName: file.originalname,
+        mimeType: file.mimetype,
+        fileSize: file.size,
+        storageKey,
+        transmissionCode: dto.transmissionCode || 'EL', // Default to electronic
+        createdBy: userId,
+      },
+    });
+
+    // Audit log
+    await this.audit.log(tenantId, {
+      actorType: 'user',
+      actorId: userId,
+      action: 'claim.attachment_uploaded',
+      entityType: 'claim',
+      entityId: claimId,
+      metadata: {
+        claimNumber: claim.claimNumber,
+        attachmentId: attachment.id,
+        fileName: file.originalname,
+        fileSize: file.size,
+        type: dto.type,
+        transmissionCode: dto.transmissionCode || 'EL',
+      },
+    });
+
+    this.logger.log(`Uploaded attachment ${file.originalname} to claim ${claim.claimNumber}`);
+
+    return {
+      ...attachment,
+      message: 'Attachment uploaded successfully',
+    };
+  }
+
+  /**
+   * List attachments for a claim
+   */
+  async listAttachments(tenantId: string, claimId: string) {
+    const claim = await this.prisma.claim.findFirst({
+      where: { id: claimId, tenantId },
+    });
+
+    if (!claim) {
+      throw new NotFoundException(`Claim with ID ${claimId} not found`);
+    }
+
+    const attachments = await this.prisma.attachment.findMany({
+      where: { claimId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return {
+      claimId,
+      claimNumber: claim.claimNumber,
+      attachments,
+      total: attachments.length,
+    };
+  }
+
+  /**
+   * Delete an attachment from a claim
+   * Only allowed if claim is in draft status
+   */
+  async deleteAttachment(tenantId: string, userId: string, claimId: string, attachmentId: string) {
+    const claim = await this.prisma.claim.findFirst({
+      where: { id: claimId, tenantId },
+    });
+
+    if (!claim) {
+      throw new NotFoundException(`Claim with ID ${claimId} not found`);
+    }
+
+    const attachment = await this.prisma.attachment.findFirst({
+      where: { id: attachmentId, claimId },
+    });
+
+    if (!attachment) {
+      throw new NotFoundException(`Attachment with ID ${attachmentId} not found`);
+    }
+
+    // Only allow deletion if claim is in draft status
+    if (claim.status !== 'draft') {
+      throw new BadRequestException('Can only delete attachments from draft claims');
+    }
+
+    // TODO: Delete from S3 in Phase 2
+    // await this.s3Service.delete(attachment.storageKey);
+
+    await this.prisma.attachment.delete({
+      where: { id: attachmentId },
+    });
+
+    // Audit log
+    await this.audit.log(tenantId, {
+      actorType: 'user',
+      actorId: userId,
+      action: 'claim.attachment_deleted',
+      entityType: 'claim',
+      entityId: claimId,
+      metadata: {
+        claimNumber: claim.claimNumber,
+        attachmentId,
+        fileName: attachment.fileName,
+      },
+    });
+
+    this.logger.log(`Deleted attachment ${attachment.fileName} from claim ${claim.claimNumber}`);
+
+    return { success: true, message: 'Attachment deleted successfully' };
+  }
+
+  // ===========================================
+  // PRE-AUTHORIZATION LINKING
+  // Per COMPREHENSIVE_INSURANCE_BILLING_WORKFLOW_PLAN.md
+  // ===========================================
+
+  /**
+   * Link a claim to a pre-authorization
+   * This helps track which claims are covered by approved PAs
+   */
+  async linkToPreAuth(tenantId: string, userId: string, claimId: string, preAuthId: string) {
+    const claim = await this.prisma.claim.findFirst({
+      where: { id: claimId, tenantId },
+    });
+
+    if (!claim) {
+      throw new NotFoundException(`Claim with ID ${claimId} not found`);
+    }
+
+    // Verify pre-auth exists and belongs to same tenant/patient
+    const preAuth = await this.prisma.preAuthorization.findFirst({
+      where: { 
+        id: preAuthId, 
+        tenantId,
+        patientId: claim.patientId, // Must be same patient
+      },
+    });
+
+    if (!preAuth) {
+      throw new NotFoundException(`Pre-authorization with ID ${preAuthId} not found or belongs to different patient`);
+    }
+
+    // Warn if PA is not approved (but allow linking anyway for tracking)
+    const isApproved = preAuth.status === 'approved';
+
+    const updatedClaim = await this.prisma.claim.update({
+      where: { id: claimId },
+      data: { preAuthId },
+      include: {
+        patient: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+        procedures: true,
+        preAuth: true,
+      },
+    });
+
+    // Audit log
+    await this.audit.log(tenantId, {
+      actorType: 'user',
+      actorId: userId,
+      action: 'claim.linked_to_preauth',
+      entityType: 'claim',
+      entityId: claimId,
+      metadata: {
+        claimNumber: claim.claimNumber,
+        preAuthId,
+        preAuthStatus: preAuth.status,
+        payerReferenceNumber: preAuth.payerReferenceNumber,
+      },
+    });
+
+    this.logger.log(`Linked claim ${claim.claimNumber} to pre-auth ${preAuthId} (status: ${preAuth.status})`);
+
+    return {
+      ...updatedClaim,
+      message: `Claim linked to pre-authorization successfully${!isApproved ? ' (Warning: PA is not yet approved)' : ''}`,
+      preAuthStatus: preAuth.status,
+    };
+  }
+
+  /**
+   * Unlink a claim from its pre-authorization
+   */
+  async unlinkFromPreAuth(tenantId: string, userId: string, claimId: string) {
+    const claim = await this.prisma.claim.findFirst({
+      where: { id: claimId, tenantId },
+      include: { preAuth: true },
+    });
+
+    if (!claim) {
+      throw new NotFoundException(`Claim with ID ${claimId} not found`);
+    }
+
+    if (!claim.preAuthId) {
+      throw new BadRequestException('Claim is not linked to a pre-authorization');
+    }
+
+    const previousPreAuthId = claim.preAuthId;
+
+    const updatedClaim = await this.prisma.claim.update({
+      where: { id: claimId },
+      data: { preAuthId: null },
+      include: {
+        patient: {
+          select: {
+            id: true,
+            firstName: true,
+            lastName: true,
+          },
+        },
+        procedures: true,
+      },
+    });
+
+    // Audit log
+    await this.audit.log(tenantId, {
+      actorType: 'user',
+      actorId: userId,
+      action: 'claim.unlinked_from_preauth',
+      entityType: 'claim',
+      entityId: claimId,
+      metadata: {
+        claimNumber: claim.claimNumber,
+        previousPreAuthId,
+      },
+    });
+
+    this.logger.log(`Unlinked claim ${claim.claimNumber} from pre-auth ${previousPreAuthId}`);
+
+    return {
+      ...updatedClaim,
+      message: 'Claim unlinked from pre-authorization successfully',
     };
   }
 }

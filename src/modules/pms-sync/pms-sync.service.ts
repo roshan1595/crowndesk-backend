@@ -371,20 +371,52 @@ export class PmsSyncService {
       where: { tenantId },
     });
 
-    const entityTypes = ['patient', 'appointment', 'insurance_policy', 'ledger'];
+    // Entity types that match the fullSync method - these are what we actually sync
+    const entityTypes = [
+      'procedureCodes',
+      'providers',
+      'operatories',
+      'patients',
+      'insurance',
+      'appointments',
+      'procedures',
+      'families',
+      'treatmentPlans',
+    ];
     
     // Get record counts for each entity type
-    const [patientCount, appointmentCount, insuranceCount] = await Promise.all([
+    const [
+      procedureCodeCount,
+      providerCount,
+      operatoryCount,
+      patientCount,
+      insuranceCount,
+      appointmentCount,
+      procedureCount,
+      familyCount,
+      treatmentPlanCount,
+    ] = await Promise.all([
+      this.prisma.procedureCode.count({ where: { tenantId } }),
+      this.prisma.provider.count({ where: { tenantId } }),
+      this.prisma.operatory.count({ where: { tenantId } }),
       this.prisma.patient.count({ where: { tenantId } }),
-      this.prisma.appointment.count({ where: { tenantId } }),
       this.prisma.insurancePolicy.count({ where: { tenantId } }),
+      this.prisma.appointment.count({ where: { tenantId } }),
+      this.prisma.completedProcedure.count({ where: { tenantId } }),
+      this.prisma.family.count({ where: { tenantId } }),
+      this.prisma.treatmentPlan.count({ where: { tenantId } }),
     ]);
 
     const recordCounts: Record<string, number> = {
-      patient: patientCount,
-      appointment: appointmentCount,
-      insurance_policy: insuranceCount,
-      ledger: 0,
+      procedureCodes: procedureCodeCount,
+      providers: providerCount,
+      operatories: operatoryCount,
+      patients: patientCount,
+      insurance: insuranceCount,
+      appointments: appointmentCount,
+      procedures: procedureCount,
+      families: familyCount,
+      treatmentPlans: treatmentPlanCount,
     };
 
     return entityTypes.map(entityType => {

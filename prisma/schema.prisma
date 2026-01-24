@@ -47,6 +47,8 @@ model Tenant {
   agentConfigs AgentConfig[]
   automationRuns AutomationRun[]
   serviceApiKeys ServiceApiKey[]
+  preAuthorizations PreAuthorization[]
+  trainingExamples TrainingExample[]
 
   @@index([subscriptionPlan])
   @@map("tenants")
@@ -322,6 +324,7 @@ model Patient {
   invoices          Invoice[]
   callRecords       CallRecord[]
   completedProcedures CompletedProcedure[]
+  preAuthorizations PreAuthorization[]
 
   @@unique([pmsSource, pmsPatientId])
   @@index([tenantId])
@@ -548,6 +551,7 @@ model InsurancePolicy {
   patient             Patient              @relation(fields: [patientId], references: [id], onDelete: Cascade)
   eligibilityRequests EligibilityRequest[]
   claims              Claim[]
+  preAuthorizations   PreAuthorization[]
 
   @@index([patientId])
   @@index([tenantId])
@@ -606,6 +610,92 @@ enum EligibilityStatus {
 }
 
 // ===========================================
+// Section 20.3.5: Pre-Authorization
+// ===========================================
+
+model PreAuthorization {
+  id                   String       @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId             String       @map("tenant_id") @db.Uuid
+  patientId            String       @map("patient_id") @db.Uuid
+  insurancePolicyId    String       @map("insurance_policy_id") @db.Uuid
+  treatmentPlanId      String?      @map("treatment_plan_id") @db.Uuid
+  
+  // Procedures requiring PA
+  procedures           Json         // Array of {cdtCode, description, toothNumber, fee, quantity}
+  
+  // Narrative
+  narrative            String?      @db.Text // Clinical narrative text
+  narrativeSource      String       @default("manual") @map("narrative_source") // 'manual' | 'ai_generated'
+  
+  // X12 278 Transaction Fields (per HIPAA EDI requirements)
+  requestTypeCode      String?      @map("request_type_code") // 'HS'=Health Services, 'AR'=Admission Review
+  serviceTypeCode      String?      @map("service_type_code") // '35'=Dental Care (X12 standard)
+  certificationTypeCode String?     @map("certification_type_code") // 'I'=Initial, 'R'=Renewal, 'A'=Appeal
+  levelOfServiceCode   String?      @map("level_of_service_code") // 'U'=Urgent, 'E'=Elective
+  
+  // Certification Period (from 278 response)
+  certificationStartDate DateTime?  @map("certification_start_date") @db.Date
+  certificationEndDate DateTime?    @map("certification_end_date") @db.Date
+  certifiedQuantity    Int?         @map("certified_quantity") // Number of services/visits approved
+  
+  // Submission
+  submissionMethod     String?      @map("submission_method") // 'electronic_278' | 'fax' | 'portal' | 'mail'
+  submissionDate       DateTime?    @map("submission_date")
+  stediTransactionId   String?      @map("stedi_transaction_id") // If submitted via Stedi 278
+  
+  // Status tracking
+  status               PAStatus     @default(draft)
+  payerReferenceNumber String?      @map("payer_reference_number")
+  approvalDate         DateTime?    @map("approval_date")
+  denialDate           DateTime?    @map("denial_date")
+  denialReason         String?      @map("denial_reason") @db.Text
+  denialCode           String?      @map("denial_code") // HIPAA Rejection Reason Code
+  expirationDate       DateTime?    @map("expiration_date") @db.Date
+  
+  // Approved details
+  approvedProcedures   Json?        @map("approved_procedures") // Subset that was approved
+  approvedAmount       Decimal?     @map("approved_amount") @db.Decimal(10, 2)
+  
+  // Urgency & Follow-up (per CMS 2025 requirements)
+  isUrgent             Boolean      @default(false) @map("is_urgent") // CMS: 72-hour response required
+  followUpDate         DateTime?    @map("follow_up_date") @db.Date
+  
+  // Creator tracking
+  createdBy            String       @map("created_by") @db.Uuid
+  createdByType        String       @default("user") @map("created_by_type") // 'user' | 'ai_agent' | 'automation'
+  
+  // Timestamps
+  createdAt            DateTime     @default(now()) @map("created_at")
+  updatedAt            DateTime     @updatedAt @map("updated_at")
+
+  // Relations
+  tenant               Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  patient              Patient          @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  insurancePolicy      InsurancePolicy  @relation(fields: [insurancePolicyId], references: [id], onDelete: Cascade)
+  treatmentPlan        TreatmentPlan?   @relation(fields: [treatmentPlanId], references: [id], onDelete: SetNull)
+  attachments          Attachment[]
+  documents            Document[]       @relation("PreAuthDocuments")
+  claims               Claim[]
+
+  @@index([tenantId, status])
+  @@index([patientId])
+  @@index([insurancePolicyId])
+  @@index([stediTransactionId])
+  @@map("pre_authorizations")
+}
+
+enum PAStatus {
+  draft              // Initial creation
+  pending_approval   // Waiting for internal approval
+  submitted          // Sent to payer
+  pending_payer      // Waiting for payer response
+  approved           // Payer approved
+  denied             // Payer denied
+  expired            // Approval expired
+  cancelled          // Cancelled by practice
+}
+
+// ===========================================
 // Section 20.4: Approvals & Audit
 // ===========================================
 
@@ -619,12 +709,28 @@ model Approval {
   newValue        Json?              @map("new_value") // New value
   beforeState     Json               @map("before_state")
   afterState      Json               @map("after_state")
-  aiRationale     String?            @map("ai_rationale")
+  
+  // Source tracking (who/what created this approval request)
+  sourceType              String   @default("user") @map("source_type") // 'user' | 'ai_agent' | 'automation' | 'external'
+  sourceUserId            String?  @map("source_user_id") @db.Uuid
+  sourceAgentType         String?  @map("source_agent_type")
+  sourceAutomationRunId   String?  @map("source_automation_run_id") @db.Uuid
+  sourceExternal          String?  @map("source_external")
+  
+  // AI metadata (if AI-generated approval request)
+  aiModel         String?            @map("ai_model")
+  aiRationale     String?            @map("ai_rationale") @db.Text
+  aiConfidence    Float?             @map("ai_confidence")
   aiEvidence      Json?              @map("ai_evidence") // AIEvidence[]
+  aiContextIds    String[]           @default([]) @map("ai_context_ids") // RAG chunks used
+  
+  // Modifications tracking
+  modifications   Json?              // Array of {field, original, approved, reason}
+  
   status          ApprovalStatus     @default(pending)
   approvedBy      String?            @map("approved_by") @db.Uuid
   approvedAt      DateTime?          @map("approved_at")
-  rejectionReason String?            @map("rejection_reason")
+  rejectionReason String?            @map("rejection_reason") @db.Text
   callRecordId    String?            @map("call_record_id") @db.Uuid // If created from AI call
   createdAt       DateTime           @default(now()) @map("created_at")
   updatedAt       DateTime           @updatedAt @map("updated_at")
@@ -637,6 +743,7 @@ model Approval {
   @@index([tenantId])
   @@index([status])
   @@index([entityType, entityId])
+  @@index([sourceType])
   @@map("approvals")
 }
 
@@ -692,6 +799,10 @@ enum ApprovalEntityType {
   billing
   coding
   claim
+  pre_auth
+  document
+  narrative
+  appeal
 }
 
 enum AuditActorType {
@@ -715,17 +826,62 @@ model Document {
   contentHash String       @map("content_hash")
   sizeBytes   Int          @map("size_bytes")
   metadata    Json?        // DocumentMetadata
+  
+  // Creator tracking (critical for audit)
+  createdByType        String  @default("user") @map("created_by_type") // 'user' | 'ai_agent' | 'automation' | 'system'
+  createdByUserId      String? @map("created_by_user_id") @db.Uuid
+  createdByAgentType   String? @map("created_by_agent_type") // Which AI agent created this
+  createdByAutomationRunId String? @map("created_by_automation_run_id") @db.Uuid
+  
+  // AI generation metadata (if applicable)
+  aiGenerated          Boolean @default(false) @map("ai_generated")
+  aiModel              String? @map("ai_model")
+  aiConfidence         Float?  @map("ai_confidence")
+  aiRationale          String? @map("ai_rationale") @db.Text
+  aiContextIds         String[] @default([]) @map("ai_context_ids") // RAG chunk IDs used
+  aiTokensUsed         Json?   @map("ai_tokens_used") // {prompt: number, completion: number}
+  
+  // Status
+  status               DocumentStatus @default(draft)
+  
+  // Approval (if required)
+  approvalId           String? @map("approval_id") @db.Uuid
+  
+  // Version tracking
+  version              Int     @default(1)
+  previousVersionId    String? @map("previous_version_id") @db.Uuid
+  
+  // Timestamps
   createdAt   DateTime     @default(now()) @map("created_at")
   updatedAt   DateTime     @updatedAt @map("updated_at")
+  
+  // Pre-authorization relation
+  preAuthId   String?      @map("pre_auth_id") @db.Uuid
+  
+  // Claim relation
+  claimId     String?      @map("claim_id") @db.Uuid
 
   // Relations
-  tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  patient   Patient?   @relation(fields: [patientId], references: [id], onDelete: SetNull)
-  ragChunks RagChunk[]
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  patient     Patient?         @relation(fields: [patientId], references: [id], onDelete: SetNull)
+  preAuth     PreAuthorization? @relation("PreAuthDocuments", fields: [preAuthId], references: [id], onDelete: SetNull)
+  ragChunks   RagChunk[]
 
   @@index([tenantId])
   @@index([patientId])
+  @@index([preAuthId])
+  @@index([claimId])
+  @@index([type, status])
   @@map("documents")
+}
+
+enum DocumentStatus {
+  draft
+  pending_approval
+  approved
+  rejected
+  sent
+  archived
 }
 
 model RagChunk {
@@ -742,6 +898,29 @@ model RagChunk {
 
   @@index([documentId])
   @@map("rag_chunks")
+}
+
+// Training examples generated from AI feedback
+// Used by AI service for RAG-based learning
+model TrainingExample {
+  id         String                      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId   String                      @map("tenant_id") @db.Uuid
+  feedbackId String?                     @map("feedback_id") @db.Uuid
+  agentType  String                      @map("agent_type") // CDT_CODER, PA_GENERATOR, etc.
+  content    String                      @db.Text
+  embedding  Unsupported("vector(1536)")? // OpenAI ada-002 dimension
+  weight     Float                       @default(1.0) // Retraining importance
+  metadata   Json?                       // Source, outcome, etc.
+  createdAt  DateTime                    @default(now()) @map("created_at")
+  updatedAt  DateTime                    @updatedAt @map("updated_at")
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, feedbackId])
+  @@index([tenantId, agentType])
+  @@index([agentType])
+  @@map("training_examples")
 }
 
 // ===========================================
@@ -784,6 +963,44 @@ enum AiInsightStatus {
   rejected
 }
 
+// ===========================================
+// Section 20.5.3: AI Feedback for Self-Learning
+// ===========================================
+
+model AIFeedbackEvent {
+  id                    String   @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId              String   @map("tenant_id") @db.Uuid
+  agentType             String   @map("agent_type") // Which AI agent: 'coding' | 'narrative' | 'appeal' | 'message'
+  
+  // What was suggested
+  suggestionType        String   @map("suggestion_type") // 'code' | 'narrative' | 'appeal' | 'message'
+  suggestionContent     Json     @map("suggestion_content")
+  suggestionConfidence  Float    @map("suggestion_confidence")
+  retrievedContextIds   String[] @default([]) @map("retrieved_context_ids") // RAG chunk IDs used
+  
+  // What was the outcome
+  outcomeAction         String   @map("outcome_action") // 'approved' | 'rejected' | 'modified'
+  finalValue            Json?    @map("final_value")
+  modificationReason    String?  @map("modification_reason") @db.Text
+  
+  // External outcome (if applicable)
+  externalSuccess       Boolean? @map("external_success")
+  externalResponseCode  String?  @map("external_response_code")
+  externalResponseMessage String? @map("external_response_message") @db.Text
+  
+  // Retraining flags
+  shouldRetrain         Boolean  @default(true) @map("should_retrain")
+  retrainingWeight      Float    @default(1.0) @map("retraining_weight")
+  wasRetrained          Boolean  @default(false) @map("was_retrained")
+  
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  @@index([tenantId, agentType])
+  @@index([shouldRetrain, wasRetrained])
+  @@index([createdAt])
+  @@map("ai_feedback_events")
+}
+
 enum DocumentType {
   clinical_note
   treatment_plan
@@ -792,6 +1009,59 @@ enum DocumentType {
   consent_form
   eob
   call_recording
+  pre_auth
+  appeal_letter
+  claim_narrative
+  other
+}
+
+// ===========================================
+// Section 20.5.5: Attachments for Claims & PAs
+// ===========================================
+
+model Attachment {
+  id               String          @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId         String          @map("tenant_id") @db.Uuid
+  type             AttachmentType
+  description      String?
+  
+  // Storage
+  storageKey       String          @map("storage_key") // S3 key
+  fileName         String          @map("file_name")
+  mimeType         String          @map("mime_type")
+  fileSize         Int             @map("file_size")
+  
+  // Relations to entities
+  claimId          String?         @map("claim_id") @db.Uuid
+  preAuthId        String?         @map("pre_auth_id") @db.Uuid
+  
+  // Stedi attachment reference (for 837D)
+  stediAttachmentId String?        @map("stedi_attachment_id")
+  transmissionCode  String?        @map("transmission_code") // 'AA' (available), 'BM' (by mail), etc.
+  
+  // Creator tracking
+  createdBy        String          @map("created_by") @db.Uuid
+  createdAt        DateTime        @default(now()) @map("created_at")
+
+  // Relations
+  claim            Claim?          @relation(fields: [claimId], references: [id], onDelete: SetNull)
+  preAuth          PreAuthorization? @relation(fields: [preAuthId], references: [id], onDelete: SetNull)
+
+  @@index([claimId])
+  @@index([preAuthId])
+  @@index([tenantId])
+  @@map("attachments")
+}
+
+enum AttachmentType {
+  xray
+  perio_chart
+  clinical_photo
+  narrative
+  eob
+  denial_letter
+  appeal_letter
+  insurance_card
   other
 }
 
@@ -1249,6 +1519,96 @@ model SyncWatermark {
 // Section 5: Claims Processing (837D/835)
 // ===========================================
 
+// Insurance Payment (for payment posting)
+model InsurancePayment {
+  id                 String                @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  tenantId           String                @map("tenant_id") @db.Uuid
+  
+  // Payment Source
+  paymentType        InsurancePaymentType  @default(insurance) @map("payment_type")
+  payerId            String?               @map("payer_id") @db.Uuid // InsurancePolicy.insurerId
+  patientId          String?               @map("patient_id") @db.Uuid
+  
+  // Payment Details
+  paymentDate        DateTime              @map("payment_date") @db.Date
+  paymentMethod      PaymentMethod         @map("payment_method")
+  checkNumber        String?               @map("check_number")
+  referenceNumber    String?               @map("reference_number") // EFT trace number
+  totalAmount        Decimal               @map("total_amount") @db.Decimal(10, 2)
+  
+  // ERA (835) Info
+  eraId              String?               @map("era_id")
+  eftTraceNumber     String?               @map("eft_trace_number")
+  
+  // Matching Status
+  matchStatus        PaymentMatchStatus    @default(unmatched) @map("match_status")
+  matchedAt          DateTime?             @map("matched_at")
+  matchedBy          String?               @map("matched_by")
+  
+  // Posting
+  postedBy           String?               @map("posted_by")
+  postedAt           DateTime?             @map("posted_at")
+  notes              String?               @db.Text
+  
+  // Timestamps
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @updatedAt @map("updated_at")
+
+  // Relations
+  postings           ClaimPaymentPosting[]
+
+  @@index([tenantId])
+  @@index([payerId])
+  @@index([patientId])
+  @@index([matchStatus])
+  @@index([referenceNumber])
+  @@index([checkNumber])
+  @@map("insurance_payments")
+}
+
+// Individual claim payment posting (line-level detail)
+model ClaimPaymentPosting {
+  id                   String            @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  insurancePaymentId   String            @map("insurance_payment_id") @db.Uuid
+  claimId              String            @map("claim_id") @db.Uuid
+  claimProcedureId     String?           @map("claim_procedure_id") @db.Uuid
+  
+  // Payment Amounts
+  paidAmount           Decimal           @map("paid_amount") @db.Decimal(10, 2)
+  allowedAmount        Decimal?          @map("allowed_amount") @db.Decimal(10, 2)
+  adjustmentAmount     Decimal?          @map("adjustment_amount") @db.Decimal(10, 2)
+  patientResponsibility Decimal?         @map("patient_responsibility") @db.Decimal(10, 2)
+  
+  // CARC/RARC Codes (X12 835 adjustment reason codes)
+  adjustmentGroupCode  String?           @map("adjustment_group_code") // CO, PR, PI, CR, OA
+  adjustmentReasonCode String?           @map("adjustment_reason_code") // CARC code (1-300+)
+  remarkCodes          String[]          @map("remark_codes") // RARC codes
+  
+  // Timestamps
+  createdAt            DateTime          @default(now()) @map("created_at")
+
+  // Relations
+  insurancePayment     InsurancePayment  @relation(fields: [insurancePaymentId], references: [id], onDelete: Cascade)
+
+  @@index([insurancePaymentId])
+  @@index([claimId])
+  @@index([claimProcedureId])
+  @@map("claim_payment_postings")
+}
+
+enum InsurancePaymentType {
+  insurance
+  patient
+  other
+}
+
+enum PaymentMatchStatus {
+  unmatched
+  partial
+  matched
+  manual
+}
+
 model Claim {
   id                 String      @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
   tenantId           String      @map("tenant_id") @db.Uuid
@@ -1290,9 +1650,17 @@ model Claim {
   appealStatus       AppealStatus @default(none) @map("appeal_status")
   appealDate         DateTime?   @map("appeal_date") @db.Date
   
+  // Clinical Narrative (for medical necessity documentation)
+  narrative          String?     @db.Text // Clinical narrative for claim
+  narrativeSource    String      @default("manual") @map("narrative_source") // 'manual' | 'ai'
+  narrativeProcedureIds String[] @map("narrative_procedure_ids") // Which procedures the narrative covers
+  
   // EDI
   stediClaimId       String?     @map("stedi_claim_id")
   ediPayload         Json?       @map("edi_payload")
+  
+  // Pre-Authorization reference
+  preAuthId          String?     @map("pre_auth_id") @db.Uuid
   
   // Timestamps
   createdAt          DateTime    @default(now()) @map("created_at")
@@ -1301,13 +1669,16 @@ model Claim {
   // Relations
   patient            Patient     @relation(fields: [patientId], references: [id], onDelete: Cascade)
   insurancePolicy    InsurancePolicy? @relation(fields: [insurancePolicyId], references: [id])
+  preAuth            PreAuthorization? @relation(fields: [preAuthId], references: [id], onDelete: SetNull)
   procedures         ClaimProcedure[]
   completedProcedures CompletedProcedure[]
+  attachments        Attachment[]
 
   @@index([tenantId])
   @@index([patientId])
   @@index([status])
   @@index([dateOfService])
+  @@index([preAuthId])
   @@map("claims")
 }
 
@@ -1387,6 +1758,7 @@ model TreatmentPlan {
   // Relations
   patient            Patient             @relation(fields: [patientId], references: [id], onDelete: Cascade)
   phases             TreatmentPhase[]
+  preAuthorizations  PreAuthorization[]
 
   @@index([tenantId])
   @@index([patientId])
@@ -1578,6 +1950,12 @@ model Invoice {
   sentAt           DateTime?     @map("sent_at")
   sentMethod       String?       @map("sent_method")
   
+  // Creator tracking (critical for audit and source attribution)
+  createdByType    String        @default("user") @map("created_by_type") // 'user' | 'automation' | 'system'
+  createdByUserId  String?       @map("created_by_user_id") @db.Uuid
+  createdByAutomationRunId String? @map("created_by_automation_run_id") @db.Uuid
+  notes            String?       @db.Text
+  
   // Timestamps
   createdAt        DateTime      @default(now()) @map("created_at")
   updatedAt        DateTime      @updatedAt @map("updated_at")
@@ -1603,12 +1981,17 @@ model InvoiceLineItem {
   quantity     Int      @default(1)
   unitPrice    Decimal  @map("unit_price") @db.Decimal(10, 2)
   amount       Decimal  @db.Decimal(10, 2)
+  
+  // Claim linking (for tracking which claim this line item relates to)
+  claimId      String?  @map("claim_id") @db.Uuid
+  
   createdAt    DateTime @default(now()) @map("created_at")
 
   // Relations
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
 
   @@index([invoiceId])
+  @@index([claimId])
   @@map("invoice_line_items")
 }
 
